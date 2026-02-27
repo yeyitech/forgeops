@@ -1,0 +1,27 @@
+id: forgeops-default-v1
+name: ForgeOps 默认流水线
+auto_merge: true
+merge_method: squash
+auto_close_issue_on_merge: true
+steps:
+  - key: architect
+  - key: issue
+    depends_on:
+      - architect
+  - key: implement
+    depends_on:
+      - issue
+  - key: test
+    depends_on:
+      - implement
+  - key: review
+    depends_on:
+      - test
+    auto_fix_enabled: true
+    auto_fix_max_turns: 2
+    auto_fix_max_files: 6
+    auto_fix_max_lines: 200
+    auto_fix_allowlist: ci,tooling,typecheck,docs
+  - key: cleanup
+    depends_on:
+      - review

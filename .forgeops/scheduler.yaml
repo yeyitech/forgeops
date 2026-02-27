@@ -1,0 +1,15 @@
+version: 1
+enabled: true
+timezone: UTC
+cleanup:
+  enabled: true
+  mode: deep
+  cron: 0 3 * * *
+  task: 执行每日熵增清理、文档园艺（freshness/structure）与质量回收
+  onlyWhenIdle: true
+issueAutoRun:
+  enabled: true
+  label: forgeops:ready
+  onlyWhenIdle: true
+  cron: "*/1 * * * *"
+  maxRunsPerTick: 3

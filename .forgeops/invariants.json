@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "architecture": {
+    "domainRoot": "src/domains",
+    "layers": [
+      "types",
+      "config",
+      "repo",
+      "service",
+      "runtime",
+      "ui"
+    ],
+    "dependencyRule": "towards-types",
+    "providersRoot": "src/providers",
+    "crossCuttingRoots": [
+      "src/auth",
+      "src/connectors",
+      "src/telemetry",
+      "src/feature-flags"
+    ],
+    "maxFileLines": 450
+  },
+  "boundaries": {
+    "enforceParseAtBoundary": true,
+    "boundaryLayers": [
+      "repo",
+      "runtime",
+      "providers"
+    ],
+    "boundarySignals": [
+      "fetch(",
+      "axios.",
+      "JSON.parse(",
+      "req.body",
+      "response.json(",
+      "process.env"
+    ],
+    "parseSignals": [
+      ".parse(",
+      "safeParse(",
+      "validate(",
+      "assert(",
+      "zod",
+      "schema"
+    ]
+  },
+  "logging": {
+    "forbidConsoleLog": true
+  },
+  "policy": {
+    "blockOn": [
+      "error"
+    ],
+    "allowWarningsInMerge": true,
+    "followup": {
+      "createGithubIssueOnWarnings": true,
+      "onlyAtStep": "review",
+      "maxItems": 8
+    }
+  },
+  "profile": {
+    "productType": "web",
+    "language": "typescript",
+    "frontendStack": "lit+vite",
+    "backendStack": "nodejs-fastify",
+    "ciProvider": "github-actions"
+  }
+}

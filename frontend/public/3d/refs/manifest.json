@@ -1,0 +1,250 @@
+{
+  "generated_at": "2026-02-26",
+  "provider": "Poly Haven API + three.js examples",
+  "license_note": "Assets in this manifest are CC0 from Poly Haven and selected external CC0 model sources.",
+  "items": [
+    {
+      "type": "hdri",
+      "asset": "studio_small_09",
+      "file": "env/studio_small_09_1k.hdr",
+      "size": 1615248,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_09_1k.hdr",
+      "source_page": "https://polyhaven.com/a/studio_small_09",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "hdri",
+      "asset": "abandoned_factory_canteen_01",
+      "file": "env/abandoned_factory_canteen_01_1k.hdr",
+      "size": 1653994,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/abandoned_factory_canteen_01_1k.hdr",
+      "source_page": "https://polyhaven.com/a/abandoned_factory_canteen_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model",
+      "asset": "Drill_01",
+      "file": "models/Drill_01/Drill_01_1k.gltf",
+      "size": 2637,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/Drill_01/Drill_01_1k.gltf",
+      "source_page": "https://polyhaven.com/a/Drill_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Drill_01",
+      "file": "models/Drill_01/textures/Drill_01_diff_1k.jpg",
+      "size": 106186,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/Drill_01/Drill_01_diff_1k.jpg",
+      "source_page": "https://polyhaven.com/a/Drill_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Drill_01",
+      "file": "models/Drill_01/textures/Drill_01_arm_1k.jpg",
+      "size": 168655,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/Drill_01/Drill_01_arm_1k.jpg",
+      "source_page": "https://polyhaven.com/a/Drill_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Drill_01",
+      "file": "models/Drill_01/textures/Drill_01_nor_gl_1k.jpg",
+      "size": 133488,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/Drill_01/Drill_01_nor_gl_1k.jpg",
+      "source_page": "https://polyhaven.com/a/Drill_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Drill_01",
+      "file": "models/Drill_01/Drill_01.bin",
+      "size": 90100,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/Drill_01/Drill_01.bin",
+      "source_page": "https://polyhaven.com/a/Drill_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model",
+      "asset": "WetFloorSign_01",
+      "file": "models/WetFloorSign_01/WetFloorSign_01_1k.gltf",
+      "size": 2688,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/WetFloorSign_01/WetFloorSign_01_1k.gltf",
+      "source_page": "https://polyhaven.com/a/WetFloorSign_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "WetFloorSign_01",
+      "file": "models/WetFloorSign_01/textures/WetFloorSign_01_arm_1k.jpg",
+      "size": 126370,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/WetFloorSign_01/WetFloorSign_01_arm_1k.jpg",
+      "source_page": "https://polyhaven.com/a/WetFloorSign_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "WetFloorSign_01",
+      "file": "models/WetFloorSign_01/textures/WetFloorSign_01_nor_gl_1k.jpg",
+      "size": 88138,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/WetFloorSign_01/WetFloorSign_01_nor_gl_1k.jpg",
+      "source_page": "https://polyhaven.com/a/WetFloorSign_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "WetFloorSign_01",
+      "file": "models/WetFloorSign_01/textures/WetFloorSign_01_diff_1k.jpg",
+      "size": 39755,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/WetFloorSign_01/WetFloorSign_01_diff_1k.jpg",
+      "source_page": "https://polyhaven.com/a/WetFloorSign_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "WetFloorSign_01",
+      "file": "models/WetFloorSign_01/WetFloorSign_01.bin",
+      "size": 9496,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/WetFloorSign_01/WetFloorSign_01.bin",
+      "source_page": "https://polyhaven.com/a/WetFloorSign_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model",
+      "asset": "Barrel_01",
+      "file": "models/Barrel_01/Barrel_01_1k.gltf",
+      "size": 2711,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/1k/Barrel_01/Barrel_01_1k.gltf",
+      "source_page": "https://polyhaven.com/a/Barrel_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Barrel_01",
+      "file": "models/Barrel_01/Barrel_01.bin",
+      "size": 81756,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/Barrel_01/Barrel_01.bin",
+      "source_page": "https://polyhaven.com/a/Barrel_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Barrel_01",
+      "file": "models/Barrel_01/textures/Barrel_01_explosive_diff_1k.jpg",
+      "size": 179308,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/Barrel_01/Barrel_01_explosive_diff_1k.jpg",
+      "source_page": "https://polyhaven.com/a/Barrel_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Barrel_01",
+      "file": "models/Barrel_01/textures/Barrel_01_explosive_nor_gl_1k.jpg",
+      "size": 185578,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/Barrel_01/Barrel_01_explosive_nor_gl_1k.jpg",
+      "source_page": "https://polyhaven.com/a/Barrel_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model-dependency",
+      "asset": "Barrel_01",
+      "file": "models/Barrel_01/textures/Barrel_01_explosive_arm_1k.jpg",
+      "size": 243594,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Models/jpg/1k/Barrel_01/Barrel_01_explosive_arm_1k.jpg",
+      "source_page": "https://polyhaven.com/a/Barrel_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "blue_metal_plate",
+      "map": "Diffuse",
+      "file": "textures/blue_metal_plate_diffuse_1k.jpg",
+      "size": 395923,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_diff_1k.jpg",
+      "source_page": "https://polyhaven.com/a/blue_metal_plate",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "blue_metal_plate",
+      "map": "nor_gl",
+      "file": "textures/blue_metal_plate_nor_gl_1k.jpg",
+      "size": 238025,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_nor_gl_1k.jpg",
+      "source_page": "https://polyhaven.com/a/blue_metal_plate",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "blue_metal_plate",
+      "map": "Rough",
+      "file": "textures/blue_metal_plate_rough_1k.jpg",
+      "size": 402450,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_rough_1k.jpg",
+      "source_page": "https://polyhaven.com/a/blue_metal_plate",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "blue_metal_plate",
+      "map": "AO",
+      "file": "textures/blue_metal_plate_ao_1k.jpg",
+      "size": 30648,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/blue_metal_plate/blue_metal_plate_ao_1k.jpg",
+      "source_page": "https://polyhaven.com/a/blue_metal_plate",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "concrete_floor_damaged_01",
+      "map": "Diffuse",
+      "file": "textures/concrete_floor_damaged_01_diffuse_1k.jpg",
+      "size": 596910,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_floor_damaged_01/concrete_floor_damaged_01_diff_1k.jpg",
+      "source_page": "https://polyhaven.com/a/concrete_floor_damaged_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "concrete_floor_damaged_01",
+      "map": "nor_gl",
+      "file": "textures/concrete_floor_damaged_01_nor_gl_1k.jpg",
+      "size": 665253,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_floor_damaged_01/concrete_floor_damaged_01_nor_gl_1k.jpg",
+      "source_page": "https://polyhaven.com/a/concrete_floor_damaged_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "concrete_floor_damaged_01",
+      "map": "Rough",
+      "file": "textures/concrete_floor_damaged_01_rough_1k.jpg",
+      "size": 629198,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_floor_damaged_01/concrete_floor_damaged_01_rough_1k.jpg",
+      "source_page": "https://polyhaven.com/a/concrete_floor_damaged_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "texture",
+      "asset": "concrete_floor_damaged_01",
+      "map": "AO",
+      "file": "textures/concrete_floor_damaged_01_ao_1k.jpg",
+      "size": 421690,
+      "source_url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/concrete_floor_damaged_01/concrete_floor_damaged_01_ao_1k.jpg",
+      "source_page": "https://polyhaven.com/a/concrete_floor_damaged_01",
+      "license": "CC0 (Poly Haven)"
+    },
+    {
+      "type": "model",
+      "asset": "RobotExpressive",
+      "file": "models/characters/RobotExpressive.glb",
+      "size": 463988,
+      "source_url": "https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
+      "source_page": "https://threejs.org/examples/webgl_animation_skinning_morph.html",
+      "license": "CC0 (Quaternius via three.js examples)",
+      "author_note": "Original model by Tomás Laulhé (Quaternius), CC0 1.0. See models/characters/RobotExpressive.README.md."
+    }
+  ]
+}

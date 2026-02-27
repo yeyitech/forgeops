@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeOps</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #09090b;
+        --panel: #18181b;
+        --text: #f4f4f5;
+        --muted: #a1a1aa;
+        --accent: #10b981;
+        --border: rgba(255,255,255,0.15);
+      }
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top right, #202330, var(--bg));
+        color: var(--text);
+        font-family: "Space Grotesk", "Inter", sans-serif;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+      .card {
+        width: min(740px, 92vw);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--panel), transparent 5%);
+        padding: 20px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+      p {
+        margin: 0 0 10px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      code {
+        font-family: "JetBrains Mono", "Fira Code", monospace;
+        color: #d4d4d8;
+      }
+      .ok {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>ForgeOps Backend Ready</h1>
+      <p>API server is running. Lit UI bundle was not found at <code>frontend/dist</code>.</p>
+      <p>Build frontend with:</p>
+      <p><code>cd frontend && npm install && npm run build</code></p>
+      <p>Then refresh this page.</p>
+      <p class="ok">Health endpoint: <code>/api/health</code></p>
+    </main>
+  </body>
+</html>

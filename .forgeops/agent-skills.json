@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "productType": "web",
+  "tech": {
+    "language": "typescript",
+    "frontendStack": "lit+vite",
+    "backendStack": "nodejs-fastify",
+    "ciProvider": "github-actions"
+  },
+  "roles": {
+    "architect": [
+      "architect-scope-planning",
+      "architect-web-solution"
+    ],
+    "issue-manager": [
+      "issue-structured-spec"
+    ],
+    "developer": [
+      "developer-frontend-web",
+      "developer-backend-web",
+      "developer-fullstack-web"
+    ],
+    "tester": [
+      "tester-web-quality-gate"
+    ],
+    "reviewer": [
+      "reviewer-web-merge-governance"
+    ],
+    "garbage-collector": [
+      "cleanup-entropy-governor"
+    ]
+  },
+  "roleLayers": [
+    "official",
+    "user-global",
+    "project-local"
+  ]
+}

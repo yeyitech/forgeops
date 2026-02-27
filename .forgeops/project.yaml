@@ -1,0 +1,17 @@
+name: forgeops
+product_type: web
+tech_profile:
+  language: typescript
+  frontend_stack: lit+vite
+  backend_stack: nodejs-fastify
+  ci_provider: github-actions
+problem_statement: |
+  
+success_metrics:
+  - 首次端到端流水线可执行
+  - UI 可展示 run 状态与产物
+non_goals:
+  - v1 不做多运行时调度优化
+runtime:
+  preferred: codex-exec-json
+model_default: gpt-5.3-codex

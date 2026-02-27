@@ -1,0 +1,24 @@
+{
+  "name": "forgeops",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "forgeops": "bin/forgeops"
+  },
+  "scripts": {
+    "start": "node src/cli/index.js start",
+    "init:dev": "node src/cli/index.js project init",
+    "check": "node --check src/cli/index.js && node --check src/core/project-init.js && node --check src/core/store.js && node --check src/core/git.js && node --check src/core/skills.js && node --check src/core/invariants.js && node --check src/core/scheduler-config.js && node --check src/core/system-config.js && node --check src/core/machine-info.js && node --check src/core/service-manager.js && node --check src/core/platform-toolchain.js && node --check src/core/workflow-config.js && node --check src/core/templates/invariants-checker.mjs && node --check src/core/templates/invariants-smoke.mjs && node --check src/server/app.js && node --check src/worker/engine.js && node --check src/worker/scheduler.js && node --check src/runtime/codex-exec-json.js && node --check src/runtime/codex-app-server.js && node --check src/runtime/preflight.js",
+    "docs:check": "node scripts/check-doc-freshness.js && node scripts/check-doc-structure.js",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build"
+  },
+  "dependencies": {
+    "node-cron": "^4.2.1",
+    "yaml": "^2.8.2"
+  }
+}

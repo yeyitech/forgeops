@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "profiles": {
+    "web": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-web-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-frontend-web", "developer-backend-web", "developer-fullstack-web"],
+        "tester": ["tester-web-quality-gate"],
+        "reviewer": ["reviewer-web-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    },
+    "miniapp": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-miniapp-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-miniapp-frontend", "developer-miniapp-backend", "developer-miniapp-fullstack"],
+        "tester": ["tester-miniapp-quality-gate"],
+        "reviewer": ["reviewer-miniapp-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    },
+    "ios": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-ios-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-ios-app", "developer-ios-backend", "developer-ios-fullstack"],
+        "tester": ["tester-ios-quality-gate"],
+        "reviewer": ["reviewer-ios-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    },
+    "microservice": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-microservice-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-microservice-python"],
+        "tester": ["tester-microservice-quality-gate"],
+        "reviewer": ["reviewer-microservice-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    },
+    "android": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-android-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-android-app", "developer-android-backend"],
+        "tester": ["tester-android-quality-gate"],
+        "reviewer": ["reviewer-android-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    },
+    "serverless": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-serverless-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-serverless-backend"],
+        "tester": ["tester-serverless-quality-gate"],
+        "reviewer": ["reviewer-serverless-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    },
+    "other": {
+      "roles": {
+        "architect": ["architect-scope-planning", "architect-web-solution"],
+        "issue-manager": ["issue-structured-spec"],
+        "developer": ["developer-fullstack-web"],
+        "tester": ["tester-web-quality-gate"],
+        "reviewer": ["reviewer-merge-governance"],
+        "garbage-collector": ["cleanup-entropy-governor"]
+      }
+    }
+  }
+}
