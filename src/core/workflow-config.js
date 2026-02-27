@@ -15,6 +15,7 @@ export const DEFAULT_WORKFLOW_CONFIG = {
   auto_merge: true,
   merge_method: "squash",
   auto_close_issue_on_merge: true,
+  auto_merge_conflict_max_attempts: 2,
   steps: [
     { key: "architect" },
     { key: "issue", depends_on: ["architect"] },
@@ -46,6 +47,7 @@ function formatResolvedWorkflow(resolved) {
       autoMerge: true,
       mergeMethod: "squash",
       autoCloseIssueOnMerge: true,
+      autoMergeConflictMaxAttempts: 2,
     },
     steps: resolved.steps.map((step) => ({
       key: step.key,

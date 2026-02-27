@@ -66,12 +66,61 @@ export type ProjectMetrics = {
   github_fetched_at: string;
 };
 
+export type RuntimeTokenUsage = {
+  runtime: string;
+  token_input_total: number;
+  token_cached_input_total: number;
+  token_output_total: number;
+  total_tokens: number;
+  token_cache_hit_rate: number;
+  share_rate: number;
+};
+
+export type ProjectTokenUsage = {
+  project_id: string;
+  project_name: string;
+  token_input_total: number;
+  token_cached_input_total: number;
+  token_output_total: number;
+  total_tokens: number;
+  token_cache_hit_rate: number;
+  share_rate: number;
+};
+
+export type GlobalTokenUsage = {
+  total_tokens: number;
+  token_input_total: number;
+  token_cached_input_total: number;
+  token_output_total: number;
+  token_cache_hit_rate: number;
+  project_totals: ProjectTokenUsage[];
+  runtime_totals: RuntimeTokenUsage[];
+  trend_7d: {
+    available: boolean;
+    source: string;
+    days: Array<{
+      date: string;
+      total_tokens: number;
+      runtime_totals: Array<{
+        runtime: string;
+        token_input_total: number;
+        token_cached_input_total: number;
+        token_output_total: number;
+        total_tokens: number;
+      }>;
+    }>;
+    warning: string;
+  };
+  collected_at: string;
+};
+
 export type Issue = {
   id: string;
   project_id: string;
   title: string;
   description: string;
   status: string;
+  workflow_status?: string;
   created_at: string;
   updated_at: string;
   github_number?: number;
@@ -209,6 +258,13 @@ export type RunAttachTerminalResult = {
   terminal: string;
   platform: string;
   notice: string;
+};
+
+export type RunBatchActionResult = {
+  total: number;
+  changed: number;
+  failed: string[];
+  projectId: string | null;
 };
 
 export type EngineState = {
@@ -361,6 +417,28 @@ export type SchedulerConfig = {
     onlyWhenIdle: boolean;
     maxRunsPerTick: number;
   };
+  skillPromotion?: {
+    enabled: boolean;
+    cron: string;
+    onlyWhenIdle: boolean;
+    maxPromotionsPerTick: number;
+    minCandidateOccurrences: number;
+    lookbackDays: number;
+    minScore: number;
+    draft: boolean;
+    roles: string[];
+  };
+  globalSkillPromotion?: {
+    enabled: boolean;
+    cron: string;
+    onlyWhenIdle: boolean;
+    maxPromotionsPerTick: number;
+    minCandidateOccurrences: number;
+    lookbackDays: number;
+    minScore: number;
+    requireProjectSkill: boolean;
+    draft: boolean;
+  };
 };
 
 export type SchedulerRuntimeState = {
@@ -379,6 +457,12 @@ export type SchedulerRuntimeState = {
     cleanupMode?: string;
     label?: string;
     maxRunsPerTick?: number;
+    minCandidateOccurrences?: number;
+    lookbackDays?: number;
+    minScore?: number;
+    maxPromotionsPerTick?: number;
+    requireProjectSkill?: boolean;
+    draft?: boolean;
     syncedAt: string;
   }>;
 };
@@ -410,6 +494,7 @@ export type WorkflowConfigDoc = {
       autoMerge: boolean;
       mergeMethod: "squash" | "merge" | "rebase";
       autoCloseIssueOnMerge: boolean;
+      autoMergeConflictMaxAttempts: number;
     };
     steps: WorkflowResolvedStep[];
   };

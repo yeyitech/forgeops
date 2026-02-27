@@ -20,7 +20,38 @@ export const DEFAULT_SCHEDULER_CONFIG = {
     cron: "*/1 * * * *",
     maxRunsPerTick: 3,
   },
+  skillPromotion: {
+    enabled: true,
+    cron: "15 */6 * * *",
+    onlyWhenIdle: true,
+    maxPromotionsPerTick: 1,
+    minCandidateOccurrences: 2,
+    lookbackDays: 14,
+    minScore: 0.6,
+    draft: true,
+    roles: [],
+  },
+  globalSkillPromotion: {
+    enabled: true,
+    cron: "45 */12 * * *",
+    onlyWhenIdle: true,
+    maxPromotionsPerTick: 1,
+    minCandidateOccurrences: 3,
+    lookbackDays: 30,
+    minScore: 0.75,
+    requireProjectSkill: true,
+    draft: true,
+  },
 };
+
+const SKILL_PROMOTION_ROLES = new Set([
+  "architect",
+  "issue-manager",
+  "developer",
+  "tester",
+  "reviewer",
+  "garbage-collector",
+]);
 
 function normalizeBool(value, fallback) {
   if (typeof value === "boolean") return value;
@@ -74,6 +105,32 @@ function normalizePositiveInt(value, fallback, min = 1, max = 1000) {
   return rounded;
 }
 
+function normalizeRate(value, fallback, min = 0, max = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min) return min;
+  if (n > max) return max;
+  return Number(n.toFixed(3));
+}
+
+function normalizeRoles(value, fallback = []) {
+  const rows = Array.isArray(value) ? value : [value];
+  const out = [];
+  for (const row of rows) {
+    if (row === null || row === undefined) continue;
+    const parts = String(row)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      if (!SKILL_PROMOTION_ROLES.has(part)) continue;
+      if (out.includes(part)) continue;
+      out.push(part);
+    }
+  }
+  return out.length > 0 ? out : fallback;
+}
+
 function mergeConfig(base, patch) {
   const left = base && typeof base === "object" ? base : {};
   const right = patch && typeof patch === "object" ? patch : {};
@@ -88,6 +145,14 @@ function mergeConfig(base, patch) {
       ...(left.issueAutoRun && typeof left.issueAutoRun === "object" ? left.issueAutoRun : {}),
       ...(right.issueAutoRun && typeof right.issueAutoRun === "object" ? right.issueAutoRun : {}),
     },
+    skillPromotion: {
+      ...(left.skillPromotion && typeof left.skillPromotion === "object" ? left.skillPromotion : {}),
+      ...(right.skillPromotion && typeof right.skillPromotion === "object" ? right.skillPromotion : {}),
+    },
+    globalSkillPromotion: {
+      ...(left.globalSkillPromotion && typeof left.globalSkillPromotion === "object" ? left.globalSkillPromotion : {}),
+      ...(right.globalSkillPromotion && typeof right.globalSkillPromotion === "object" ? right.globalSkillPromotion : {}),
+    },
   };
 }
 
@@ -95,6 +160,10 @@ export function normalizeSchedulerConfig(rawConfig) {
   const raw = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
   const cleanup = raw.cleanup && typeof raw.cleanup === "object" ? raw.cleanup : {};
   const issueAutoRun = raw.issueAutoRun && typeof raw.issueAutoRun === "object" ? raw.issueAutoRun : {};
+  const skillPromotion = raw.skillPromotion && typeof raw.skillPromotion === "object" ? raw.skillPromotion : {};
+  const globalSkillPromotion = raw.globalSkillPromotion && typeof raw.globalSkillPromotion === "object"
+    ? raw.globalSkillPromotion
+    : {};
 
   return {
     version: 1,
@@ -118,6 +187,77 @@ export function normalizeSchedulerConfig(rawConfig) {
         1,
         20
       ),
+    },
+    skillPromotion: {
+      enabled: normalizeBool(skillPromotion.enabled, DEFAULT_SCHEDULER_CONFIG.skillPromotion.enabled),
+      cron: normalizeText(skillPromotion.cron, DEFAULT_SCHEDULER_CONFIG.skillPromotion.cron),
+      onlyWhenIdle: normalizeBool(
+        skillPromotion.onlyWhenIdle,
+        DEFAULT_SCHEDULER_CONFIG.skillPromotion.onlyWhenIdle,
+      ),
+      maxPromotionsPerTick: normalizePositiveInt(
+        skillPromotion.maxPromotionsPerTick,
+        DEFAULT_SCHEDULER_CONFIG.skillPromotion.maxPromotionsPerTick,
+        1,
+        20
+      ),
+      minCandidateOccurrences: normalizePositiveInt(
+        skillPromotion.minCandidateOccurrences,
+        DEFAULT_SCHEDULER_CONFIG.skillPromotion.minCandidateOccurrences,
+        1,
+        50
+      ),
+      lookbackDays: normalizePositiveInt(
+        skillPromotion.lookbackDays,
+        DEFAULT_SCHEDULER_CONFIG.skillPromotion.lookbackDays,
+        1,
+        365
+      ),
+      minScore: normalizeRate(
+        skillPromotion.minScore,
+        DEFAULT_SCHEDULER_CONFIG.skillPromotion.minScore,
+        0,
+        1
+      ),
+      draft: normalizeBool(skillPromotion.draft, DEFAULT_SCHEDULER_CONFIG.skillPromotion.draft),
+      roles: normalizeRoles(skillPromotion.roles, DEFAULT_SCHEDULER_CONFIG.skillPromotion.roles),
+    },
+    globalSkillPromotion: {
+      enabled: normalizeBool(globalSkillPromotion.enabled, DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.enabled),
+      cron: normalizeText(globalSkillPromotion.cron, DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.cron),
+      onlyWhenIdle: normalizeBool(
+        globalSkillPromotion.onlyWhenIdle,
+        DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.onlyWhenIdle,
+      ),
+      maxPromotionsPerTick: normalizePositiveInt(
+        globalSkillPromotion.maxPromotionsPerTick,
+        DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.maxPromotionsPerTick,
+        1,
+        20
+      ),
+      minCandidateOccurrences: normalizePositiveInt(
+        globalSkillPromotion.minCandidateOccurrences,
+        DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.minCandidateOccurrences,
+        1,
+        50
+      ),
+      lookbackDays: normalizePositiveInt(
+        globalSkillPromotion.lookbackDays,
+        DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.lookbackDays,
+        1,
+        365
+      ),
+      minScore: normalizeRate(
+        globalSkillPromotion.minScore,
+        DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.minScore,
+        0,
+        1
+      ),
+      requireProjectSkill: normalizeBool(
+        globalSkillPromotion.requireProjectSkill,
+        DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.requireProjectSkill,
+      ),
+      draft: normalizeBool(globalSkillPromotion.draft, DEFAULT_SCHEDULER_CONFIG.globalSkillPromotion.draft),
     },
   };
 }

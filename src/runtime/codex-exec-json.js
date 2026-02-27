@@ -12,6 +12,12 @@ function normalizeStatus(value) {
   return null;
 }
 
+function encodeTomlString(value) {
+  return `"${String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')}"`;
+}
+
 function normalizeResumeSession(input) {
   if (!input || typeof input !== "object") return null;
   const threadId = String(input.threadId ?? "").trim();
@@ -85,6 +91,7 @@ export class CodexExecJsonRuntime {
 
     const executeOnce = async (mode, resume) => {
       const isResumeMode = mode === "resume" && Boolean(resume?.threadId);
+      const useDangerBypass = sandboxMode === "danger-full-access" && approvalPolicy === "never";
       const schemaFile = isResumeMode
         ? null
         : await writeOutputSchema(params.outputSchema ?? {
@@ -99,8 +106,6 @@ export class CodexExecJsonRuntime {
             "--json",
             "--all",
             "--skip-git-repo-check",
-            "--config",
-            `approval_policy=\"${approvalPolicy}\"`,
           ]
         : [
             "exec",
@@ -108,13 +113,28 @@ export class CodexExecJsonRuntime {
             "--skip-git-repo-check",
             "--cd",
             params.cwd,
-            "--sandbox",
-            sandboxMode,
-            "--config",
-            `approval_policy=\"${approvalPolicy}\"`,
-            "--output-schema",
-            schemaFile.filePath,
           ];
+
+      if (!isResumeMode) {
+        if (useDangerBypass) {
+          args.push("--dangerously-bypass-approvals-and-sandbox");
+        } else {
+          args.push("--sandbox", sandboxMode);
+        }
+      } else if (useDangerBypass) {
+        args.push("--dangerously-bypass-approvals-and-sandbox");
+      }
+
+      args.push(
+        "--config",
+        `approval_policy=${encodeTomlString(approvalPolicy)}`,
+        "--config",
+        `sandbox_mode=${encodeTomlString(sandboxMode)}`
+      );
+
+      if (!isResumeMode) {
+        args.push("--output-schema", schemaFile.filePath);
+      }
 
       if (requestedModel) {
         args.push("--model", requestedModel);

@@ -850,10 +850,16 @@ const ALLOWED_STEP_KEYS = new Set([
   "issue",
   "implement",
   "test",
-  "platform-smoke",
   "review",
   "cleanup",
 ]);
+
+function normalizeContextRegistryStepKey(value) {
+  const step = String(value ?? "").trim().toLowerCase();
+  if (!step) return "";
+  if (step === "platform-smoke") return "test";
+  return step;
+}
 
 function listMarkdownFiles(dir) {
   const out = [];
@@ -1021,7 +1027,9 @@ function validateContextRegistry(registry, errors, referenced) {
     const owner = String(entry.owner ?? "").trim();
     const priority = String(entry.priority ?? "").trim().toLowerCase();
     const steps = Array.isArray(entry.use_for_steps)
-      ? entry.use_for_steps.map((step) => String(step ?? "").trim().toLowerCase()).filter(Boolean)
+      ? entry.use_for_steps
+        .map((step) => normalizeContextRegistryStepKey(step))
+        .filter(Boolean)
       : [];
 
     if (!docPath) {
@@ -1549,6 +1557,127 @@ function run(command, args = [], timeout = 5000) {
   };
 }
 
+function runShellCommand(command, timeout = 120000, extraEnv = {}) {
+  const cmd = String(command ?? "").trim();
+  if (!cmd) {
+    return {
+      ok: false,
+      exitCode: -1,
+      stdout: "",
+      stderr: "",
+      error: "empty command",
+    };
+  }
+  const result = spawnSync(cmd, {
+    encoding: "utf8",
+    cwd: ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout,
+    shell: true,
+    env: {
+      ...process.env,
+      FORCE_COLOR: "0",
+      ...extraEnv,
+    },
+  });
+  return {
+    ok: !result.error && result.status === 0,
+    exitCode: Number.isInteger(result.status) ? result.status : -1,
+    stdout: String(result.stdout ?? "").trim(),
+    stderr: String(result.stderr ?? "").trim(),
+    error: result.error ? String(result.error.message ?? result.error) : "",
+  };
+}
+
+function resolveScriptCommand(preferredScripts = []) {
+  const packageJson = readJsonFile("package.json");
+  const scripts = packageJson && typeof packageJson === "object" && packageJson.scripts && typeof packageJson.scripts === "object"
+    ? packageJson.scripts
+    : {};
+  const picked = preferredScripts.find((name) => Boolean(scripts[name]));
+  if (!picked) return null;
+  return {
+    command: "npm run " + picked,
+    source: "package.json#scripts." + picked,
+  };
+}
+
+function resolveRuntimeCommandFromEnvOrScripts(envKey, preferredScripts = []) {
+  const key = String(envKey ?? "").trim();
+  const fromEnv = key ? String(process.env[key] ?? "").trim() : "";
+  if (fromEnv) {
+    return {
+      command: fromEnv,
+      source: key,
+    };
+  }
+  return resolveScriptCommand(preferredScripts);
+}
+
+function normalizeCommandTimeout(envKey, fallbackMs = 120000) {
+  const fallback = Number.isFinite(Number(fallbackMs)) && Number(fallbackMs) > 0
+    ? Math.floor(Number(fallbackMs))
+    : 120000;
+  const key = String(envKey ?? "").trim();
+  if (!key) return fallback;
+  const raw = Number(process.env[key] ?? fallback);
+  if (!Number.isFinite(raw) || raw <= 0) return fallback;
+  return Math.min(10 * 60 * 1000, Math.floor(raw));
+}
+
+function appendRuntimeCommandChecks(out, options = {}) {
+  const checks = Array.isArray(out) ? out : [];
+  const idPrefix = String(options.idPrefix ?? "runtime.command").trim() || "runtime.command";
+  const title = String(options.title ?? "运行时").trim() || "运行时";
+  const commandInfo = options.commandInfo && typeof options.commandInfo === "object"
+    ? options.commandInfo
+    : null;
+  const requiredWhenMissing = Boolean(options.requiredWhenMissing);
+  const requiredWhenPresent = options.requiredWhenPresent !== false;
+  const timeoutMs = normalizeCommandTimeout(options.timeoutEnvKey, Number(options.defaultTimeoutMs ?? 120000));
+  const extraEnv = options.extraEnv && typeof options.extraEnv === "object"
+    ? options.extraEnv
+    : {};
+  const missingHint = String(options.missingHint ?? "").trim();
+  const failedHint = String(options.failedHint ?? "").trim();
+
+  checks.push(check(
+    idPrefix + ".command",
+    title + "命令可解析",
+    Boolean(commandInfo?.command),
+    requiredWhenMissing,
+    commandInfo?.command
+      ? ("command=" + commandInfo.command + " (" + commandInfo.source + ")")
+      : "未配置 " + title + "命令",
+    commandInfo?.command ? "" : missingHint
+  ));
+  if (!commandInfo?.command) {
+    return checks;
+  }
+
+  const commandRun = runShellCommand(commandInfo.command, timeoutMs, extraEnv);
+  const detailParts = [
+    "command=" + commandInfo.command,
+    "source=" + commandInfo.source,
+    "exit=" + String(commandRun.exitCode),
+  ];
+  const stdoutTail = tailText(commandRun.stdout, 12, 1200);
+  const stderrTail = tailText(commandRun.stderr, 12, 1200);
+  if (stdoutTail) detailParts.push("stdout_tail=" + stdoutTail);
+  if (stderrTail) detailParts.push("stderr_tail=" + stderrTail);
+  if (commandRun.error) detailParts.push("error=" + commandRun.error);
+
+  checks.push(check(
+    idPrefix + ".exec",
+    title + "命令执行通过",
+    commandRun.ok,
+    requiredWhenPresent,
+    detailParts.join(" | "),
+    commandRun.ok ? "" : failedHint
+  ));
+  return checks;
+}
+
 function resolveCommandPath(command) {
   const checker = process.platform === "win32" ? "where" : "which";
   const out = run(checker, [command], 1800);
@@ -1770,6 +1899,46 @@ function resolveBackendStartCommand(backendPort) {
     return resolvePythonBackendStartCommand(backendPort);
   }
   return null;
+}
+
+function resolveMiniappDebugCommand() {
+  return resolveRuntimeCommandFromEnvOrScripts(
+    "FORGEOPS_MINIAPP_DEBUG_CMD",
+    ["smoke:miniapp", "miniapp:smoke", "test:miniapp"]
+  );
+}
+
+function resolveWebSmokeCommand() {
+  return resolveRuntimeCommandFromEnvOrScripts(
+    "FORGEOPS_WEB_SMOKE_CMD",
+    ["smoke:web", "test:e2e", "e2e"]
+  );
+}
+
+function resolveIosSmokeCommand() {
+  const fromEnv = resolveRuntimeCommandFromEnvOrScripts("FORGEOPS_IOS_SMOKE_CMD", []);
+  if (fromEnv?.command) return fromEnv;
+  return {
+    command: "xcodebuild -list",
+    source: "xcodebuild -list",
+  };
+}
+
+function resolveMicroserviceSmokeCommand() {
+  return resolveRuntimeCommandFromEnvOrScripts(
+    "FORGEOPS_MICROSERVICE_SMOKE_CMD",
+    ["smoke:backend", "smoke:api", "test:smoke"]
+  );
+}
+
+function resolveAndroidSmokeCommand() {
+  const fromEnv = resolveRuntimeCommandFromEnvOrScripts("FORGEOPS_ANDROID_SMOKE_CMD", ["smoke:android", "test:android"]);
+  if (fromEnv?.command) return fromEnv;
+  return resolveAndroidBuildCommand();
+}
+
+function resolveOtherSmokeCommand() {
+  return resolveRuntimeCommandFromEnvOrScripts("FORGEOPS_OTHER_SMOKE_CMD", ["smoke", "verify"]);
 }
 
 function delay(ms) {
@@ -2036,6 +2205,21 @@ async function miniappChecks() {
     ));
   }
 
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "miniapp.debug",
+    title: "miniapp 启动/调试",
+    commandInfo: resolveMiniappDebugCommand(),
+    requiredWhenMissing: false,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_MINIAPP_DEBUG_TIMEOUT_MS",
+    defaultTimeoutMs: 120000,
+    extraEnv: {
+      FORGEOPS_WECHAT_DEVTOOLS_CLI: String(process.env.FORGEOPS_WECHAT_DEVTOOLS_CLI ?? ""),
+    },
+    missingHint: "建议设置 FORGEOPS_MINIAPP_DEBUG_CMD（例如拉起开发者工具并输出调试日志）。",
+    failedHint: "检查命令执行日志，修复启动报错后重试。",
+  });
+
   const backendChecks = await runBackendHealthSmoke();
   out.push(...backendChecks);
 
@@ -2066,6 +2250,17 @@ function webChecks() {
     hasPlaywright ? "已发现 e2e/smoke 脚本" : "未发现 e2e/smoke 脚本",
     "建议增加 Playwright/Chrome DevTools 验收脚本。"
   ));
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "web.runtime",
+    title: "web 运行态 smoke",
+    commandInfo: resolveWebSmokeCommand(),
+    requiredWhenMissing: false,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_WEB_SMOKE_TIMEOUT_MS",
+    defaultTimeoutMs: 180000,
+    missingHint: "建议设置 FORGEOPS_WEB_SMOKE_CMD，或提供 smoke:web/test:e2e/e2e 脚本。",
+    failedHint: "检查浏览器运行态日志或 e2e 报错，修复后重试。",
+  });
   return out;
 }
 
@@ -2082,15 +2277,17 @@ function iosChecks() {
     "初始化 iOS 项目后应生成 .xcodeproj 或 .xcworkspace。"
   ));
   if (hasProject) {
-    const xcodebuildList = run("xcodebuild", ["-list"], 7000);
-    out.push(check(
-      "ios.xcodebuild.list",
-      "xcodebuild -list 可执行",
-      xcodebuildList.ok,
-      true,
-      xcodebuildList.ok ? "xcodebuild -list 执行成功" : (xcodebuildList.stderr || xcodebuildList.error || "执行失败"),
-      "检查工程路径、Xcode 配置与签名配置。"
-    ));
+    appendRuntimeCommandChecks(out, {
+      idPrefix: "ios.runtime",
+      title: "iOS 运行态 smoke",
+      commandInfo: resolveIosSmokeCommand(),
+      requiredWhenMissing: true,
+      requiredWhenPresent: true,
+      timeoutEnvKey: "FORGEOPS_IOS_SMOKE_TIMEOUT_MS",
+      defaultTimeoutMs: 240000,
+      missingHint: "建议设置 FORGEOPS_IOS_SMOKE_CMD（例如 xcodebuild test/build）。",
+      failedHint: "检查 xcodebuild 输出、签名配置与模拟器环境。",
+    });
   }
   return out;
 }
@@ -2122,22 +2319,31 @@ async function microserviceChecks() {
     python ? "" : "安装 Python 3.10+ 并确保 PATH 可访问。"
   ));
 
-  const depSync = resolvePythonDependencySyncCommand();
-  out.push(check(
-    "microservice.python.deps.sync",
-    "依赖同步命令可解析",
-    Boolean(depSync?.command),
-    true,
-    depSync?.command
-      ? ("command=" + depSync.command + " (" + depSync.source + ")")
-      : "未解析到依赖同步命令",
-    depSync?.command
-      ? ""
-      : "建议配置 uv/poetry/pip 路径，或设置 FORGEOPS_PYTHON_DEPS_SYNC_CMD。"
-  ));
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "microservice.python.deps.sync",
+    title: "微服务依赖同步",
+    commandInfo: resolvePythonDependencySyncCommand(),
+    requiredWhenMissing: true,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_PYTHON_DEPS_SYNC_TIMEOUT_MS",
+    defaultTimeoutMs: 300000,
+    missingHint: "建议配置 uv/poetry/pip 路径，或设置 FORGEOPS_PYTHON_DEPS_SYNC_CMD。",
+    failedHint: "检查依赖源、锁文件和 Python 环境后重试。",
+  });
 
   const backendChecks = await runBackendHealthSmoke();
   out.push(...backendChecks);
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "microservice.runtime",
+    title: "微服务运行态 smoke",
+    commandInfo: resolveMicroserviceSmokeCommand(),
+    requiredWhenMissing: false,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_MICROSERVICE_SMOKE_TIMEOUT_MS",
+    defaultTimeoutMs: 180000,
+    missingHint: "可设置 FORGEOPS_MICROSERVICE_SMOKE_CMD 或提供 smoke:backend/smoke:api/test:smoke 脚本。",
+    failedHint: "检查服务 trace/日志与接口错误，修复后重试。",
+  });
   return out;
 }
 
@@ -2197,42 +2403,27 @@ function androidChecks() {
     "请确保 Android app 模块结构完整。"
   ));
 
-  const buildCommand = resolveAndroidBuildCommand();
-  out.push(check(
-    "android.build.command",
-    "Android 构建命令可解析",
-    Boolean(buildCommand?.command),
-    true,
-    buildCommand?.command
-      ? ("command=" + buildCommand.command + " (" + buildCommand.source + ")")
-      : "未解析到 Android 构建命令",
-    buildCommand?.command
-      ? ""
-      : "设置 FORGEOPS_ANDROID_BUILD_CMD，或提供 gradlew/gradle 工程文件。"
-  ));
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "android.runtime",
+    title: "Android 构建/运行态 smoke",
+    commandInfo: resolveAndroidSmokeCommand(),
+    requiredWhenMissing: true,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_ANDROID_SMOKE_TIMEOUT_MS",
+    defaultTimeoutMs: 300000,
+    missingHint: "设置 FORGEOPS_ANDROID_SMOKE_CMD 或 FORGEOPS_ANDROID_BUILD_CMD，或提供 gradlew/gradle 工程文件。",
+    failedHint: "检查 Gradle 输出、SDK/NDK 与设备/模拟器环境后重试。",
+  });
   return out;
 }
 
 function resolveServerlessSmokeCommand() {
-  const fromEnv = String(process.env.FORGEOPS_SERVERLESS_SMOKE_CMD ?? "").trim();
-  if (fromEnv) {
-    return {
-      command: fromEnv,
-      source: "FORGEOPS_SERVERLESS_SMOKE_CMD",
-    };
-  }
-
-  const packageJson = readJsonFile("package.json");
-  const scripts = packageJson && typeof packageJson === "object" && packageJson.scripts && typeof packageJson.scripts === "object"
-    ? packageJson.scripts
-    : {};
-  const preferred = ["smoke:serverless", "test:functions", "verify", "test"];
-  const picked = preferred.find((name) => Boolean(scripts[name]));
-  if (picked) {
-    return {
-      command: "npm run " + picked,
-      source: "package.json#scripts." + picked,
-    };
+  const fromEnvOrScripts = resolveRuntimeCommandFromEnvOrScripts(
+    "FORGEOPS_SERVERLESS_SMOKE_CMD",
+    ["smoke:serverless", "test:functions", "verify", "test"]
+  );
+  if (fromEnvOrScripts?.command) {
+    return fromEnvOrScripts;
   }
 
   const deployTool = resolveFirstCommandPath(["serverless", "sls", "sam", "cdk", "vercel", "netlify", "aws"]);
@@ -2277,25 +2468,36 @@ function serverlessChecks() {
   ));
 
   const smokeCommand = resolveServerlessSmokeCommand();
-  out.push(check(
-    "serverless.smoke.command",
-    "Serverless smoke 命令可解析",
-    Boolean(smokeCommand?.command),
-    true,
-    smokeCommand?.command
-      ? ("command=" + smokeCommand.command + " (" + smokeCommand.source + ")")
-      : "未解析到 serverless smoke 命令",
-    smokeCommand?.command
-      ? ""
-      : "设置 FORGEOPS_SERVERLESS_SMOKE_CMD，或在 package.json 增加 smoke:serverless/test:functions 脚本。"
-  ));
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "serverless.runtime",
+    title: "Serverless 运行态 smoke",
+    commandInfo: smokeCommand,
+    requiredWhenMissing: true,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_SERVERLESS_SMOKE_TIMEOUT_MS",
+    defaultTimeoutMs: 240000,
+    missingHint: "设置 FORGEOPS_SERVERLESS_SMOKE_CMD，或在 package.json 增加 smoke:serverless/test:functions 脚本。",
+    failedHint: "检查函数触发日志、部署工具输出与运行时配置后重试。",
+  });
   return out;
 }
 
 function otherChecks() {
-  return [
+  const out = [
     check("other.smoke.placeholder", "通用 smoke 检查", true, true, "other 类型暂无额外平台 smoke 约束"),
   ];
+  appendRuntimeCommandChecks(out, {
+    idPrefix: "other.runtime",
+    title: "通用运行态 smoke",
+    commandInfo: resolveOtherSmokeCommand(),
+    requiredWhenMissing: false,
+    requiredWhenPresent: true,
+    timeoutEnvKey: "FORGEOPS_OTHER_SMOKE_TIMEOUT_MS",
+    defaultTimeoutMs: 180000,
+    missingHint: "可设置 FORGEOPS_OTHER_SMOKE_CMD 或提供 smoke/verify 脚本。",
+    failedHint: "检查通用 smoke 命令日志后重试。",
+  });
+  return out;
 }
 
 async function pickChecks() {

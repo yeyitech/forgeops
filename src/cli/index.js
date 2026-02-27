@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 import { runDoctor } from "../core/doctor.js";
 import { ensureGlobalGitHubDeveloperAccess } from "../core/git.js";
 import { normalizeProductType } from "../core/product-type.js";
@@ -24,6 +27,12 @@ import { ForgeOpsEngine } from "../worker/engine.js";
 import { ForgeOpsScheduler } from "../worker/scheduler.js";
 import { createServerApp } from "../server/app.js";
 
+const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(CLI_DIR, "../..");
+const DEFAULT_META_SKILL_PATH = path.join(REPO_ROOT, "FORGEOPS_META_SKILL.md");
+const DEFAULT_DASHBOARD_URL = "http://127.0.0.1:4173";
+const CODEX_SESSION_REGISTRY_FILE = "codex-session-registry.json";
+
 async function createStoreInstance() {
   const mod = await import("../core/store.js");
   return mod.createStore();
@@ -35,29 +44,36 @@ function printUsage() {
       "ForgeOps CLI",
       "",
       "forgeops start [--port 4173] [--host 127.0.0.1] [--poll-ms 1500] [--concurrency 2]",
-      "forgeops project init [--name NAME] [--type web|miniapp|ios|microservice|android|serverless|other] [--language LANG] [--frontend-stack STACK] [--backend-stack STACK] [--ci-provider NAME] [--problem TEXT] [--path DIR] [--github-repo OWNER/NAME] [--github-public|--github-private] [--branch-protection|--no-branch-protection]",
+      "forgeops project init [--name NAME] [--type web|miniapp|ios|microservice|android|serverless|other] [--language LANG] [--frontend-stack STACK] [--backend-stack STACK] [--ci-provider NAME] [--problem TEXT] [--path DIR] [--github-repo OWNER/NAME] [--github-public|--github-private] [--branch-protection|--no-branch-protection] [--no-open-ui]  # default opens Dashboard",
       "forgeops project list",
       "forgeops project metrics <projectId> [--json]",
-      "forgeops issue create <projectId> <title> [--description TEXT] [--no-auto-run]    # create GitHub issue",
+      "forgeops issue create <projectId> <title> [--description TEXT] [--no-auto-run] [--mode quick|standard] [--quick]    # create GitHub issue",
       "forgeops issue list <projectId>                                   # list GitHub issues",
       "forgeops skill candidates <projectId>                             # list skill candidates",
       "forgeops skill resolve <projectId>                                # resolve effective skills with priority",
       "forgeops skill promote <projectId> --candidate PATH [--name SKILL_NAME] [--description TEXT] [--roles developer,tester] [--role reviewer] [--ready]",
       "forgeops skill global-status                                      # show user-global skill library status",
       "forgeops skill promote-global <projectId> --candidate PATH [--name SKILL_NAME] [--description TEXT] [--ready]",
-      "forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER",
+      "forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER [--mode quick|standard]",
       "forgeops run list [--project PROJECT_ID]",
       "forgeops run show <runId>",
+      "forgeops run stop <runId>",
       "forgeops run resume <runId>",
+      "forgeops run stop-all [--project PROJECT_ID]",
+      "forgeops run resume-all [--project PROJECT_ID]",
       "forgeops run attach <runId> [--step STEP_KEY] [--session SESSION_ID] [--thread THREAD_ID]  # open Codex thread",
       "forgeops doctor [--json]",
       "forgeops service install [--no-start] [--host 127.0.0.1] [--port 4173] [--poll-ms 1500] [--concurrency 2] [--runtime-home DIR]",
       "forgeops service start|stop|restart|status|uninstall [--runtime-home DIR]",
       "forgeops service logs [--lines 120] [--runtime-home DIR]",
       "forgeops scheduler show <projectId>",
-      "forgeops scheduler set <projectId> [--enabled true|false] [--cleanup-enabled true|false] [--cron \"0 3 * * *\"] [--timezone UTC] [--task TEXT] [--only-when-idle true|false] [--issue-auto-enabled true|false] [--issue-auto-cron \"*/1 * * * *\"] [--issue-auto-label forgeops:ready|*] [--issue-auto-only-when-idle true|false] [--issue-auto-max-runs-per-tick 3]",
+      "forgeops scheduler set <projectId> [--enabled true|false] [--cleanup-enabled true|false] [--cron \"0 3 * * *\"] [--timezone UTC] [--task TEXT] [--only-when-idle true|false] [--issue-auto-enabled true|false] [--issue-auto-cron \"*/1 * * * *\"] [--issue-auto-label forgeops:ready|*] [--issue-auto-only-when-idle true|false] [--issue-auto-max-runs-per-tick 3] [--skill-auto-enabled true|false] [--skill-auto-cron \"15 */6 * * *\"] [--skill-auto-only-when-idle true|false] [--skill-auto-max-promotions-per-tick 1] [--skill-auto-min-occurrences 2] [--skill-auto-lookback-days 14] [--skill-auto-min-score 0.6] [--skill-auto-draft true|false] [--skill-auto-roles developer,tester] [--global-skill-auto-enabled true|false] [--global-skill-auto-cron \"45 */12 * * *\"] [--global-skill-auto-only-when-idle true|false] [--global-skill-auto-max-promotions-per-tick 1] [--global-skill-auto-min-occurrences 3] [--global-skill-auto-lookback-days 30] [--global-skill-auto-min-score 0.75] [--global-skill-auto-require-project-skill true|false] [--global-skill-auto-draft true|false]",
       "forgeops workflow show <projectId>",
-      "forgeops workflow set <projectId> [--yaml-file PATH | --yaml TEXT | --reset-default]",
+      "forgeops workflow set <projectId> [--yaml-file PATH | --yaml TEXT | --reset-default | --auto-merge-conflict-max-attempts N]",
+      "forgeops workflow set-conflict-retries <projectId> <0-8>",
+      "forgeops workflow get-conflict-retries <projectId>",
+      "forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill]  # ForgeOps usage coach",
+      "forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only]  # managed project copilot",
       "forgeops help",
     ].join("\n") + "\n"
   );
@@ -93,6 +109,15 @@ function parseBool(value, fallback = null) {
   if (["1", "true", "yes", "on"].includes(text)) return true;
   if (["0", "false", "no", "off"].includes(text)) return false;
   return fallback;
+}
+
+function normalizeRunModeFlag(value, fallback = "standard") {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallback;
+  if (text === "standard" || text === "quick") {
+    return text;
+  }
+  return "";
 }
 
 function toNonNegativeInt(value, fallback = 0) {
@@ -140,6 +165,72 @@ function formatWorkflowResolvedStep(step) {
 function fail(message, code = 1) {
   process.stderr.write(`${message}\n`);
   process.exit(code);
+}
+
+function ensureDashboardServiceReadyForInit() {
+  try {
+    const status = getForgeOpsServiceInfo();
+    if (!status.installed) {
+      return {
+        ok: true,
+        state: "installed-and-started",
+        status: installForgeOpsService({ startNow: true }),
+      };
+    }
+    if (!status.running) {
+      return {
+        ok: true,
+        state: "started",
+        status: startForgeOpsService(),
+      };
+    }
+    return {
+      ok: true,
+      state: "already-running",
+      status,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      state: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function openUrlInBrowser(url) {
+  const target = String(url ?? "").trim();
+  if (!target) {
+    return { ok: false, error: "empty url" };
+  }
+
+  let command = "";
+  let commandArgs = [];
+  if (process.platform === "darwin") {
+    command = "open";
+    commandArgs = [target];
+  } else if (process.platform === "win32") {
+    command = "cmd";
+    commandArgs = ["/c", "start", "", target];
+  } else if (process.platform === "linux") {
+    command = "xdg-open";
+    commandArgs = [target];
+  } else {
+    return { ok: false, error: `unsupported platform: ${process.platform}` };
+  }
+
+  const result = spawnSync(command, commandArgs, {
+    stdio: "ignore",
+    encoding: "utf8",
+  });
+
+  if (result.error) {
+    return { ok: false, error: String(result.error.message || result.error) };
+  }
+  if (result.status !== 0) {
+    return { ok: false, error: `exit code ${result.status}` };
+  }
+  return { ok: true };
 }
 
 async function commandProject(store, args) {
@@ -293,6 +384,30 @@ async function commandProject(store, args) {
     for (const item of scaffold.writes) {
       process.stdout.write(`- ${item.created ? "created" : "exists"} ${item.path}\n`);
     }
+
+    const autoOpenDisabled = args.includes("--no-open-ui");
+    const ciMode = parseBool(process.env.CI, false) === true;
+    const interactive = Boolean(process.stdout.isTTY);
+    if (autoOpenDisabled || !interactive || ciMode) {
+      process.stdout.write(`Dashboard: ${DEFAULT_DASHBOARD_URL}\n`);
+      if (!autoOpenDisabled && (!interactive || ciMode)) {
+        process.stdout.write("Auto-open skipped (non-interactive mode).\n");
+      }
+      return;
+    }
+
+    const serviceStatus = ensureDashboardServiceReadyForInit();
+    if (!serviceStatus.ok) {
+      process.stdout.write(`UI service warning: ${serviceStatus.error}\n`);
+    }
+
+    const openResult = openUrlInBrowser(DEFAULT_DASHBOARD_URL);
+    if (openResult.ok) {
+      process.stdout.write(`Dashboard opened: ${DEFAULT_DASHBOARD_URL}\n`);
+    } else {
+      process.stdout.write(`Auto-open failed: ${openResult.error}\n`);
+      process.stdout.write(`Open manually: ${DEFAULT_DASHBOARD_URL}\n`);
+    }
     return;
   }
 
@@ -305,20 +420,36 @@ async function commandIssue(store, args) {
     const projectId = args[1];
     const title = args[2];
     if (!projectId || !title) {
-      fail("Usage: forgeops issue create <projectId> <title> [--description TEXT] [--no-auto-run]");
+      fail("Usage: forgeops issue create <projectId> <title> [--description TEXT] [--no-auto-run] [--mode quick|standard] [--quick]");
     }
     const description = getFlag(args, "--description", "");
     const autoRun = !args.includes("--no-auto-run");
-    const created = store.createIssueWithAutoRun({ projectId, title, description, autoRun });
+    const modeRaw = args.includes("--quick")
+      ? "quick"
+      : String(getFlag(args, "--mode", "standard") ?? "standard").trim().toLowerCase();
+    const runMode = normalizeRunModeFlag(modeRaw, "standard");
+    if (!runMode) {
+      fail("--mode must be one of: quick, standard");
+    }
+    const labels = runMode === "quick" ? ["forgeops:quick"] : [];
+    const created = store.createIssueWithAutoRun({
+      projectId,
+      title,
+      description,
+      autoRun,
+      runMode,
+      labels,
+    });
     const issue = created.issue;
     process.stdout.write(`Created GitHub issue: #${issue.id}${issue.github_url ? ` (${issue.github_url})` : ""}\n`);
     if (created.auto_run_enabled && created.run) {
-      process.stdout.write(`Auto-created run: ${created.run.id}\n`);
+      process.stdout.write(`Auto-created run: ${created.run.id} (mode=${runMode})\n`);
     } else if (created.auto_run_enabled && created.auto_run_error) {
       process.stdout.write(`Auto-run warning: ${created.auto_run_error}\n`);
     } else {
       process.stdout.write("Auto-run: disabled\n");
     }
+    process.stdout.write(`Issue mode label: ${runMode === "quick" ? "forgeops:quick" : "default"}\n`);
     return;
   }
 
@@ -490,15 +621,19 @@ async function commandRun(store, args) {
     const projectId = args[1];
     const task = args[2] ?? "";
     if (!projectId) {
-      fail("Usage: forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER");
+      fail("Usage: forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER [--mode quick|standard]");
     }
 
     const issueId = getFlag(args, "--issue", null);
     if (!issueId) {
-      fail("Usage: forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER");
+      fail("Usage: forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER [--mode quick|standard]");
     }
-    const run = store.createRun({ projectId, issueId, task });
-    process.stdout.write(`Created run: ${run.id}\n`);
+    const runMode = normalizeRunModeFlag(getFlag(args, "--mode", "standard"), "standard");
+    if (!runMode) {
+      fail("--mode must be one of: quick, standard");
+    }
+    const run = store.createRun({ projectId, issueId, task, runMode });
+    process.stdout.write(`Created run: ${run.id} (mode=${runMode})\n`);
     return;
   }
 
@@ -556,6 +691,43 @@ async function commandRun(store, args) {
     return;
   }
 
+  if (action === "stop") {
+    const runId = args[1];
+    if (!runId) fail("Usage: forgeops run stop <runId>");
+    const ok = store.stopRun(runId);
+    if (!ok) fail("Run cannot be stopped", 2);
+    process.stdout.write(`Stopped run: ${runId}\n`);
+    return;
+  }
+
+  if (action === "stop-all") {
+    const projectId = String(getFlag(args, "--project", "") ?? "").trim();
+    const result = store.stopRuns({
+      projectId: projectId || null,
+    });
+    process.stdout.write(
+      `Stopped runs: ${result.changed}/${result.total}${result.projectId ? ` (project=${result.projectId})` : " (all projects)"}\n`
+    );
+    if (result.failed.length > 0) {
+      process.stdout.write(`Failed runs: ${result.failed.join(", ")}\n`);
+    }
+    return;
+  }
+
+  if (action === "resume-all") {
+    const projectId = String(getFlag(args, "--project", "") ?? "").trim();
+    const result = store.resumePausedRuns({
+      projectId: projectId || null,
+    });
+    process.stdout.write(
+      `Resumed runs: ${result.changed}/${result.total}${result.projectId ? ` (project=${result.projectId})` : " (all projects)"}\n`
+    );
+    if (result.failed.length > 0) {
+      process.stdout.write(`Failed runs: ${result.failed.join(", ")}\n`);
+    }
+    return;
+  }
+
   if (action === "attach") {
     const runId = args[1];
     if (!runId) {
@@ -605,7 +777,7 @@ async function commandRun(store, args) {
     return;
   }
 
-  fail("Unknown run command. Try: forgeops run create|list|show|resume|attach");
+  fail("Unknown run command. Try: forgeops run create|list|show|stop|resume|stop-all|resume-all|attach");
 }
 
 async function commandScheduler(store, args) {
@@ -732,8 +904,162 @@ async function commandScheduler(store, args) {
     patch.issueAutoRun = issueAutoRunPatch;
   }
 
+  const skillPromotionPatch = {};
+  const skillAutoEnabledValue = getFlag(args, "--skill-auto-enabled", null);
+  if (skillAutoEnabledValue !== null) {
+    const parsed = parseBool(skillAutoEnabledValue, null);
+    if (parsed === null) {
+      fail("--skill-auto-enabled must be true/false");
+    }
+    skillPromotionPatch.enabled = parsed;
+  }
+  const skillAutoCronValue = getFlag(args, "--skill-auto-cron", null);
+  if (skillAutoCronValue !== null) {
+    skillPromotionPatch.cron = String(skillAutoCronValue);
+  }
+  const skillAutoOnlyWhenIdleValue = getFlag(args, "--skill-auto-only-when-idle", null);
+  if (skillAutoOnlyWhenIdleValue !== null) {
+    const parsed = parseBool(skillAutoOnlyWhenIdleValue, null);
+    if (parsed === null) {
+      fail("--skill-auto-only-when-idle must be true/false");
+    }
+    skillPromotionPatch.onlyWhenIdle = parsed;
+  }
+  const skillAutoMaxPromotionsValue = getFlag(args, "--skill-auto-max-promotions-per-tick", null);
+  if (skillAutoMaxPromotionsValue !== null) {
+    const parsed = Number(skillAutoMaxPromotionsValue);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      fail("--skill-auto-max-promotions-per-tick must be a positive integer");
+    }
+    skillPromotionPatch.maxPromotionsPerTick = Math.floor(parsed);
+  }
+  const skillAutoMinOccurrencesValue = getFlag(args, "--skill-auto-min-occurrences", null);
+  if (skillAutoMinOccurrencesValue !== null) {
+    const parsed = Number(skillAutoMinOccurrencesValue);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      fail("--skill-auto-min-occurrences must be a positive integer");
+    }
+    skillPromotionPatch.minCandidateOccurrences = Math.floor(parsed);
+  }
+  const skillAutoLookbackValue = getFlag(args, "--skill-auto-lookback-days", null);
+  if (skillAutoLookbackValue !== null) {
+    const parsed = Number(skillAutoLookbackValue);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      fail("--skill-auto-lookback-days must be a positive integer");
+    }
+    skillPromotionPatch.lookbackDays = Math.floor(parsed);
+  }
+  const skillAutoMinScoreValue = getFlag(args, "--skill-auto-min-score", null);
+  if (skillAutoMinScoreValue !== null) {
+    const parsed = Number(skillAutoMinScoreValue);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      fail("--skill-auto-min-score must be between 0 and 1");
+    }
+    skillPromotionPatch.minScore = Number(parsed.toFixed(3));
+  }
+  const skillAutoDraftValue = getFlag(args, "--skill-auto-draft", null);
+  if (skillAutoDraftValue !== null) {
+    const parsed = parseBool(skillAutoDraftValue, null);
+    if (parsed === null) {
+      fail("--skill-auto-draft must be true/false");
+    }
+    skillPromotionPatch.draft = parsed;
+  }
+  const skillAutoRolesValues = [
+    ...getFlags(args, "--skill-auto-roles"),
+    ...getFlags(args, "--skill-auto-role"),
+  ];
+  if (skillAutoRolesValues.length > 0) {
+    const roles = [];
+    for (const value of skillAutoRolesValues) {
+      for (const part of String(value).split(",")) {
+        const role = part.trim();
+        if (!role) continue;
+        if (roles.includes(role)) continue;
+        roles.push(role);
+      }
+    }
+    skillPromotionPatch.roles = roles;
+  }
+  if (Object.keys(skillPromotionPatch).length > 0) {
+    patch.skillPromotion = skillPromotionPatch;
+  }
+
+  const globalSkillPromotionPatch = {};
+  const globalSkillAutoEnabledValue = getFlag(args, "--global-skill-auto-enabled", null);
+  if (globalSkillAutoEnabledValue !== null) {
+    const parsed = parseBool(globalSkillAutoEnabledValue, null);
+    if (parsed === null) {
+      fail("--global-skill-auto-enabled must be true/false");
+    }
+    globalSkillPromotionPatch.enabled = parsed;
+  }
+  const globalSkillAutoCronValue = getFlag(args, "--global-skill-auto-cron", null);
+  if (globalSkillAutoCronValue !== null) {
+    globalSkillPromotionPatch.cron = String(globalSkillAutoCronValue);
+  }
+  const globalSkillAutoOnlyWhenIdleValue = getFlag(args, "--global-skill-auto-only-when-idle", null);
+  if (globalSkillAutoOnlyWhenIdleValue !== null) {
+    const parsed = parseBool(globalSkillAutoOnlyWhenIdleValue, null);
+    if (parsed === null) {
+      fail("--global-skill-auto-only-when-idle must be true/false");
+    }
+    globalSkillPromotionPatch.onlyWhenIdle = parsed;
+  }
+  const globalSkillAutoMaxPromotionsValue = getFlag(args, "--global-skill-auto-max-promotions-per-tick", null);
+  if (globalSkillAutoMaxPromotionsValue !== null) {
+    const parsed = Number(globalSkillAutoMaxPromotionsValue);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      fail("--global-skill-auto-max-promotions-per-tick must be a positive integer");
+    }
+    globalSkillPromotionPatch.maxPromotionsPerTick = Math.floor(parsed);
+  }
+  const globalSkillAutoMinOccurrencesValue = getFlag(args, "--global-skill-auto-min-occurrences", null);
+  if (globalSkillAutoMinOccurrencesValue !== null) {
+    const parsed = Number(globalSkillAutoMinOccurrencesValue);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      fail("--global-skill-auto-min-occurrences must be a positive integer");
+    }
+    globalSkillPromotionPatch.minCandidateOccurrences = Math.floor(parsed);
+  }
+  const globalSkillAutoLookbackValue = getFlag(args, "--global-skill-auto-lookback-days", null);
+  if (globalSkillAutoLookbackValue !== null) {
+    const parsed = Number(globalSkillAutoLookbackValue);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      fail("--global-skill-auto-lookback-days must be a positive integer");
+    }
+    globalSkillPromotionPatch.lookbackDays = Math.floor(parsed);
+  }
+  const globalSkillAutoMinScoreValue = getFlag(args, "--global-skill-auto-min-score", null);
+  if (globalSkillAutoMinScoreValue !== null) {
+    const parsed = Number(globalSkillAutoMinScoreValue);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      fail("--global-skill-auto-min-score must be between 0 and 1");
+    }
+    globalSkillPromotionPatch.minScore = Number(parsed.toFixed(3));
+  }
+  const globalSkillAutoRequireProjectSkillValue = getFlag(args, "--global-skill-auto-require-project-skill", null);
+  if (globalSkillAutoRequireProjectSkillValue !== null) {
+    const parsed = parseBool(globalSkillAutoRequireProjectSkillValue, null);
+    if (parsed === null) {
+      fail("--global-skill-auto-require-project-skill must be true/false");
+    }
+    globalSkillPromotionPatch.requireProjectSkill = parsed;
+  }
+  const globalSkillAutoDraftValue = getFlag(args, "--global-skill-auto-draft", null);
+  if (globalSkillAutoDraftValue !== null) {
+    const parsed = parseBool(globalSkillAutoDraftValue, null);
+    if (parsed === null) {
+      fail("--global-skill-auto-draft must be true/false");
+    }
+    globalSkillPromotionPatch.draft = parsed;
+  }
+  if (Object.keys(globalSkillPromotionPatch).length > 0) {
+    patch.globalSkillPromotion = globalSkillPromotionPatch;
+  }
+
   if (Object.keys(patch).length === 0) {
-    fail("No scheduler fields provided. Use --enabled/--cleanup-enabled/--cleanup-mode/--cron/--timezone/--task/--only-when-idle/--issue-auto-enabled/--issue-auto-cron/--issue-auto-label/--issue-auto-only-when-idle/--issue-auto-max-runs-per-tick");
+    fail("No scheduler fields provided. Use --enabled/--cleanup-enabled/--cleanup-mode/--cron/--timezone/--task/--only-when-idle/--issue-auto-enabled/--issue-auto-cron/--issue-auto-label/--issue-auto-only-when-idle/--issue-auto-max-runs-per-tick/--skill-auto-*/--global-skill-auto-*");
   }
 
   const saved = updateSchedulerConfig(project.root_path, patch);
@@ -743,8 +1069,13 @@ async function commandScheduler(store, args) {
 
 async function commandWorkflow(store, args) {
   const action = args[0];
-  if (action !== "show" && action !== "set") {
-    fail("Unknown workflow command. Try: forgeops workflow show|set");
+  if (
+    action !== "show"
+    && action !== "set"
+    && action !== "set-conflict-retries"
+    && action !== "get-conflict-retries"
+  ) {
+    fail("Unknown workflow command. Try: forgeops workflow show|set|set-conflict-retries|get-conflict-retries");
   }
 
   const projectId = args[1];
@@ -763,6 +1094,10 @@ async function commandWorkflow(store, args) {
     process.stdout.write(`Path: ${loaded.path}\n`);
     process.stdout.write(`Source: ${loaded.source}\n`);
     process.stdout.write(`Resolved: ${loaded.resolved.id} / ${loaded.resolved.name}\n`);
+    const controls = loaded.resolved.workflowControls ?? {};
+    process.stdout.write(
+      `Controls: autoMerge=${controls.autoMerge ?? true} mergeMethod=${controls.mergeMethod ?? "squash"} autoCloseIssueOnMerge=${controls.autoCloseIssueOnMerge ?? true} autoMergeConflictMaxAttempts=${controls.autoMergeConflictMaxAttempts ?? 2}\n`
+    );
     process.stdout.write(`Steps: ${loaded.resolved.steps.map((step) => step.key).join(" -> ")}\n`);
     for (const step of loaded.resolved.steps) {
       process.stdout.write(`- ${formatWorkflowResolvedStep(step)}\n`);
@@ -772,16 +1107,82 @@ async function commandWorkflow(store, args) {
     return;
   }
 
+  if (action === "get-conflict-retries") {
+    const loaded = loadWorkflowConfig(project.root_path);
+    const controls = loaded.resolved.workflowControls ?? {};
+    const retries = Number.isFinite(Number(controls.autoMergeConflictMaxAttempts))
+      ? Math.floor(Number(controls.autoMergeConflictMaxAttempts))
+      : 2;
+    process.stdout.write(`${retries}\n`);
+    return;
+  }
+
+  if (action === "set-conflict-retries") {
+    const retriesRaw = args[2];
+    if (retriesRaw === undefined) {
+      fail("Usage: forgeops workflow set-conflict-retries <projectId> <0-8>");
+    }
+    const parsed = Number(retriesRaw);
+    if (!Number.isFinite(parsed) || Math.floor(parsed) !== parsed || parsed < 0 || parsed > 8) {
+      fail("workflow set-conflict-retries expects an integer in [0, 8]");
+    }
+    const loaded = loadWorkflowConfig(project.root_path);
+    let yamlObj = {};
+    try {
+      const candidate = YAML.parse(loaded.yaml);
+      yamlObj = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? candidate
+        : {};
+    } catch (err) {
+      fail(`Invalid workflow yaml: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    yamlObj.auto_merge_conflict_max_attempts = Math.floor(parsed);
+    const saved = writeWorkflowConfigYaml(project.root_path, buildWorkflowYaml(yamlObj));
+    process.stdout.write(`Updated workflow config: ${saved.path}\n`);
+    process.stdout.write(`Resolved: ${saved.resolved.id} / ${saved.resolved.name}\n`);
+    const controls = saved.resolved.workflowControls ?? {};
+    process.stdout.write(
+      `Controls: autoMerge=${controls.autoMerge ?? true} mergeMethod=${controls.mergeMethod ?? "squash"} autoCloseIssueOnMerge=${controls.autoCloseIssueOnMerge ?? true} autoMergeConflictMaxAttempts=${controls.autoMergeConflictMaxAttempts ?? 2}\n`
+    );
+    process.stdout.write(`Steps: ${saved.resolved.steps.map((step) => step.key).join(" -> ")}\n`);
+    for (const step of saved.resolved.steps) {
+      process.stdout.write(`- ${formatWorkflowResolvedStep(step)}\n`);
+    }
+    return;
+  }
+
   const yamlFile = getFlag(args, "--yaml-file", null);
   const yamlInline = getFlag(args, "--yaml", null);
   const resetDefault = args.includes("--reset-default");
-  const modes = Number(Boolean(yamlFile)) + Number(Boolean(yamlInline)) + Number(resetDefault);
+  const autoMergeConflictMaxAttemptsRaw = getFlag(args, "--auto-merge-conflict-max-attempts", null);
+  const hasAutoMergeConflictPatch = autoMergeConflictMaxAttemptsRaw !== null;
+  const modes = Number(Boolean(yamlFile))
+    + Number(Boolean(yamlInline))
+    + Number(resetDefault)
+    + Number(hasAutoMergeConflictPatch);
   if (modes !== 1) {
-    fail("workflow set requires exactly one mode: --yaml-file PATH | --yaml TEXT | --reset-default");
+    fail("workflow set requires exactly one mode: --yaml-file PATH | --yaml TEXT | --reset-default | --auto-merge-conflict-max-attempts N");
   }
 
   let yamlText = "";
-  if (resetDefault) {
+  if (hasAutoMergeConflictPatch) {
+    const parsed = Number(autoMergeConflictMaxAttemptsRaw);
+    if (!Number.isFinite(parsed) || Math.floor(parsed) !== parsed || parsed < 0 || parsed > 8) {
+      fail("--auto-merge-conflict-max-attempts must be an integer in [0, 8]");
+    }
+    const loaded = loadWorkflowConfig(project.root_path);
+    let yamlObj = {};
+    try {
+      const candidate = YAML.parse(loaded.yaml);
+      yamlObj = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? candidate
+        : {};
+    } catch (err) {
+      fail(`Invalid workflow yaml: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    yamlObj.auto_merge_conflict_max_attempts = Math.floor(parsed);
+    yamlText = buildWorkflowYaml(yamlObj);
+  } else if (resetDefault) {
     yamlText = buildWorkflowYaml(DEFAULT_WORKFLOW_CONFIG);
   } else if (yamlFile) {
     const filePath = path.resolve(String(yamlFile));
@@ -796,6 +1197,10 @@ async function commandWorkflow(store, args) {
   const saved = writeWorkflowConfigYaml(project.root_path, yamlText);
   process.stdout.write(`Updated workflow config: ${saved.path}\n`);
   process.stdout.write(`Resolved: ${saved.resolved.id} / ${saved.resolved.name}\n`);
+  const controls = saved.resolved.workflowControls ?? {};
+  process.stdout.write(
+    `Controls: autoMerge=${controls.autoMerge ?? true} mergeMethod=${controls.mergeMethod ?? "squash"} autoCloseIssueOnMerge=${controls.autoCloseIssueOnMerge ?? true} autoMergeConflictMaxAttempts=${controls.autoMergeConflictMaxAttempts ?? 2}\n`
+  );
   process.stdout.write(`Steps: ${saved.resolved.steps.map((step) => step.key).join(" -> ")}\n`);
   for (const step of saved.resolved.steps) {
     process.stdout.write(`- ${formatWorkflowResolvedStep(step)}\n`);
@@ -832,11 +1237,16 @@ async function commandDoctor(args) {
 
 function formatServiceStatusText(status) {
   const lines = [];
+  const running = typeof status.running === "boolean" ? status.running : Boolean(status.loaded);
   lines.push(`Service manager: ${status.manager} (${status.platform})`);
   lines.push(`Service id: ${status.serviceId}`);
   lines.push(`Installed: ${status.installed ? "yes" : "no"}`);
   lines.push(`Enabled: ${status.enabled ? "yes" : "no"}`);
-  lines.push(`Running: ${status.loaded ? "yes" : "no"}`);
+  lines.push(`Running: ${running ? "yes" : "no"}`);
+  if (status.lifecycle) {
+    const rawState = String(status.rawState ?? "").trim();
+    lines.push(`Lifecycle: ${rawState ? `${status.lifecycle} (state=${rawState})` : status.lifecycle}`);
+  }
   lines.push(`Service path: ${status.servicePath}`);
   lines.push(`Stdout log: ${status.stdoutLogPath}`);
   lines.push(`Stderr log: ${status.stderrLogPath}`);
@@ -947,6 +1357,624 @@ async function commandService(args) {
   }
 
   fail("Unknown service command. Try: forgeops service install|start|stop|restart|status|logs|uninstall");
+}
+
+function resolveForgeOpsRuntimeHome() {
+  if (process.env.FORGEOPS_HOME) {
+    return path.resolve(process.env.FORGEOPS_HOME);
+  }
+  return path.join(os.homedir(), ".forgeops");
+}
+
+function resolveCodexHome() {
+  if (process.env.CODEX_HOME) {
+    return path.resolve(process.env.CODEX_HOME);
+  }
+  return path.join(os.homedir(), ".codex");
+}
+
+function resolveCodexSessionRegistryPath() {
+  return path.join(resolveForgeOpsRuntimeHome(), CODEX_SESSION_REGISTRY_FILE);
+}
+
+function normalizeWorkspacePath(cwd) {
+  const resolved = path.resolve(String(cwd ?? ""));
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function isPathWithinWorkspace(targetPath, workspaceRoot) {
+  const target = normalizeWorkspacePath(targetPath);
+  const root = normalizeWorkspacePath(workspaceRoot);
+  if (!target || !root) return false;
+  if (target === root) return true;
+  const rel = path.relative(root, target);
+  if (!rel) return true;
+  return !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function resolveManagedProjectByPath(store, cwd) {
+  const target = normalizeWorkspacePath(cwd);
+  const projects = store.listProjects();
+  let matched = null;
+  let matchedRoot = "";
+  for (const project of projects) {
+    const root = normalizeWorkspacePath(project.root_path);
+    if (!isPathWithinWorkspace(target, root)) continue;
+    if (!matched || root.length > matchedRoot.length) {
+      matched = project;
+      matchedRoot = root;
+    }
+  }
+  return matched;
+}
+
+function resolveCodexSessionTrackingKey(cwd, sessionKey) {
+  const explicitKey = String(sessionKey ?? "").trim();
+  if (explicitKey) {
+    return `session:${explicitKey}`;
+  }
+  return `cwd:${normalizeWorkspacePath(cwd)}`;
+}
+
+function readCodexSessionRegistry() {
+  const filePath = resolveCodexSessionRegistryPath();
+  if (!fs.existsSync(filePath)) {
+    return {
+      version: 1,
+      workspaces: {},
+      filePath,
+    };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const workspaces = parsed?.workspaces && typeof parsed.workspaces === "object"
+      ? parsed.workspaces
+      : {};
+    return {
+      version: 1,
+      workspaces,
+      filePath,
+    };
+  } catch {
+    return {
+      version: 1,
+      workspaces: {},
+      filePath,
+    };
+  }
+}
+
+function writeCodexSessionRegistry(registry) {
+  const filePath = resolveCodexSessionRegistryPath();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify({
+    version: 1,
+    workspaces: registry?.workspaces && typeof registry.workspaces === "object"
+      ? registry.workspaces
+      : {},
+  }, null, 2)}\n`, "utf8");
+}
+
+function getTrackedCodexWorkspaceSession(cwd, sessionKey = "") {
+  const key = resolveCodexSessionTrackingKey(cwd, sessionKey);
+  const registry = readCodexSessionRegistry();
+  const raw = registry.workspaces?.[key];
+  if (!raw || typeof raw !== "object") return null;
+  const threadId = String(raw.threadId ?? "").trim();
+  if (!threadId) return null;
+  return {
+    trackingKey: key,
+    threadId,
+    updatedAt: String(raw.updatedAt ?? "").trim(),
+    source: String(raw.source ?? "").trim(),
+    sessionFile: String(raw.sessionFile ?? "").trim(),
+    workspaceCwd: String(raw.workspaceCwd ?? "").trim(),
+    model: String(raw.model ?? "").trim(),
+    metaSkillPath: String(raw.metaSkillPath ?? "").trim(),
+  };
+}
+
+function setTrackedCodexWorkspaceSession(cwd, sessionKey, patch) {
+  const key = resolveCodexSessionTrackingKey(cwd, sessionKey);
+  const normalizedCwd = normalizeWorkspacePath(cwd);
+  const registry = readCodexSessionRegistry();
+  const current = registry.workspaces?.[key] && typeof registry.workspaces[key] === "object"
+    ? registry.workspaces[key]
+    : {};
+  const next = {
+    threadId: String(patch?.threadId ?? current.threadId ?? "").trim(),
+    updatedAt: String(patch?.updatedAt ?? current.updatedAt ?? new Date().toISOString()).trim(),
+    source: String(patch?.source ?? current.source ?? "").trim(),
+    sessionFile: String(patch?.sessionFile ?? current.sessionFile ?? "").trim(),
+    workspaceCwd: String(patch?.workspaceCwd ?? current.workspaceCwd ?? normalizedCwd).trim(),
+    model: String(patch?.model ?? current.model ?? "").trim(),
+    metaSkillPath: String(patch?.metaSkillPath ?? current.metaSkillPath ?? "").trim(),
+  };
+  if (!next.threadId) return;
+  registry.workspaces[key] = next;
+  writeCodexSessionRegistry(registry);
+}
+
+function collectCodexSessionFilesNewestFirst(rootDir) {
+  if (!fs.existsSync(rootDir)) return [];
+  const files = [];
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        files.push(fullPath);
+      }
+    }
+  }
+  files.sort((a, b) => b.localeCompare(a));
+  return files;
+}
+
+function parseSessionMetaRecordFromFile(filePath) {
+  const maxReadBytes = 64 * 1024;
+  try {
+    const fd = fs.openSync(filePath, "r");
+    let firstLine = "";
+    try {
+      const buffer = Buffer.allocUnsafe(maxReadBytes);
+      const bytesRead = fs.readSync(fd, buffer, 0, maxReadBytes, 0);
+      if (bytesRead <= 0) return null;
+      const text = buffer.toString("utf8", 0, bytesRead);
+      const newlineIdx = text.indexOf("\n");
+      firstLine = newlineIdx >= 0 ? text.slice(0, newlineIdx) : text;
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (!firstLine) return null;
+    const record = JSON.parse(firstLine);
+    if (record?.type !== "session_meta") return null;
+    const payload = record?.payload && typeof record.payload === "object"
+      ? record.payload
+      : null;
+    if (!payload) return null;
+    const sessionId = String(payload.id ?? "").trim();
+    const cwd = String(payload.cwd ?? "").trim();
+    const source = String(payload.source ?? "").trim().toLowerCase();
+    const timestamp = String(payload.timestamp ?? record.timestamp ?? "").trim();
+    if (!sessionId || !cwd || !source) return null;
+    const timestampMs = Number.isFinite(Date.parse(timestamp))
+      ? Date.parse(timestamp)
+      : 0;
+    return {
+      sessionId,
+      cwd,
+      source,
+      timestamp,
+      timestampMs,
+      filePath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findLatestInteractiveCodexSessionForCwd(cwd, options = {}) {
+  const target = normalizeWorkspacePath(cwd);
+  const minTimestampMs = Number(options.minTimestampMs ?? 0);
+  const maxScan = toInt(options.maxScan ?? 300, 300);
+  const sessionsRoot = path.join(resolveCodexHome(), "sessions");
+  const files = collectCodexSessionFilesNewestFirst(sessionsRoot);
+  let scanned = 0;
+  for (const filePath of files) {
+    if (scanned >= maxScan) break;
+    scanned += 1;
+    const meta = parseSessionMetaRecordFromFile(filePath);
+    if (!meta) continue;
+    if (meta.source !== "cli" && meta.source !== "vscode") continue;
+    const sessionCwd = normalizeWorkspacePath(meta.cwd);
+    if (sessionCwd !== target) continue;
+    if (minTimestampMs > 0 && meta.timestampMs > 0 && meta.timestampMs < minTimestampMs) continue;
+    return meta;
+  }
+  return null;
+}
+
+function isCodexAppInstalled() {
+  if (process.platform === "darwin") {
+    return fs.existsSync("/Applications/Codex.app")
+      || fs.existsSync(path.join(os.homedir(), "Applications", "Codex.app"));
+  }
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ? path.resolve(process.env.LOCALAPPDATA) : "";
+    if (!localAppData) return false;
+    return fs.existsSync(path.join(localAppData, "Programs", "Codex", "Codex.exe"));
+  }
+  return false;
+}
+
+function buildMetaSkillBootstrapPrompt(params = {}) {
+  const userPrompt = String(params.userPrompt ?? "").trim();
+  const includeMetaSkill = params.includeMetaSkill !== false;
+  const metaSkillPath = String(params.metaSkillPath ?? "").trim();
+  const lines = [];
+
+  lines.push("你是 ForgeOps 控制面协作 Agent。");
+  lines.push("默认使用 ForgeOps CLI 完成探测、执行、恢复与验证，不绕过主路径。");
+
+  if (includeMetaSkill && metaSkillPath) {
+    lines.push(`先完整阅读并严格遵循元技能文档：${metaSkillPath}`);
+    lines.push("执行时遵守其中的执行原则、命令剧本、决策规则与禁止事项。");
+  }
+
+  lines.push("先做只读探测，再做变更；输出保持 Command / Result / Next 三段。");
+
+  if (userPrompt) {
+    lines.push("");
+    lines.push("用户初始请求：");
+    lines.push(userPrompt);
+  } else {
+    lines.push("");
+    lines.push("先回一句：已进入 ForgeOps 元技能会话，等待任务指令。");
+  }
+
+  return lines.join("\n");
+}
+
+function buildProjectBootstrapPrompt(params = {}) {
+  const userPrompt = String(params.userPrompt ?? "").trim();
+  const includeMetaSkill = params.includeMetaSkill === true;
+  const metaSkillPath = String(params.metaSkillPath ?? "").trim();
+  const localOnly = params.localOnly === true;
+  const launchCwd = String(params.launchCwd ?? "").trim();
+  const project = params.project && typeof params.project === "object"
+    ? params.project
+    : {};
+  const projectId = String(project.id ?? "").trim();
+  const projectName = String(project.name ?? "").trim();
+  const productType = String(project.product_type ?? "").trim();
+  const projectRoot = String(project.root_path ?? launchCwd).trim();
+  const problemStatement = String(project.problem_statement ?? "").trim();
+  const projectContext = String(params.projectContext ?? "").trim();
+  const projectGovernance = String(params.projectGovernance ?? "").trim();
+  const lines = [];
+
+  const clipSection = (text, maxChars = 2400) => {
+    const raw = String(text ?? "").trim();
+    if (!raw) return "";
+    if (raw.length <= maxChars) return raw;
+    return `${raw.slice(0, maxChars)}\n...[truncated]`;
+  };
+
+  lines.push("你是 ForgeOps 项目协作 Agent。");
+  lines.push("目标：在具体项目内，和用户协作推进需求，优先通过 ForgeOps CLI 驱动研发流水线。");
+  lines.push("你既可以使用 ForgeOps 命令，也可以直接在当前项目代码库执行实现/测试/验证。");
+  lines.push("创建 run 前先做模式判定：`quick` 或 `standard`（禁止使用不存在的 `full` 模式）。");
+  lines.push("run mode 路由规则：");
+  lines.push("- quick：单点修复、小范围重构、配置/脚本调整、文档更新、低风险回归验证。");
+  lines.push("- standard：跨模块改造、架构变更、数据模型/迁移、接口契约变化、权限/安全相关、需要完整评审链路。");
+  lines.push("不确定时默认 quick；一旦发现影响面扩大或验收风险上升，升级到 standard。");
+  lines.push("执行时必须显式带模式参数：`forgeops run create ... --mode quick|standard`。");
+  lines.push("若先创建 issue，quick 场景优先使用：`forgeops issue create ... --mode quick`。");
+  if (localOnly) {
+    lines.push("当前会话运行在 LOCAL_ONLY 模式。");
+    lines.push("禁止执行流水线命令：`forgeops issue create/list`、`forgeops run create/list/show/stop/resume/attach`。");
+    lines.push("仅允许在本地项目目录进行代码修改、构建、测试、调试与文档更新。");
+    lines.push("若用户明确要求走 Issue/Run 流程，先说明当前是 LOCAL_ONLY，再请求用户移除该模式。");
+  }
+
+  if (includeMetaSkill && metaSkillPath) {
+    lines.push(`先完整阅读并遵循元技能文档：${metaSkillPath}`);
+    lines.push("在不和项目上下文冲突的前提下执行元技能约束。");
+  }
+
+  lines.push(`当前项目：${projectName || "(unnamed)"} (${projectId || "unknown"})`);
+  lines.push(`项目类型：${productType || "unknown"}`);
+  lines.push(`项目根目录：${projectRoot || launchCwd}`);
+  if (problemStatement) {
+    lines.push(`项目问题定义：${problemStatement}`);
+  }
+  if (projectContext) {
+    lines.push("");
+    lines.push("项目上下文（.forgeops/context.md 摘要）：");
+    lines.push(clipSection(projectContext, 2800));
+  }
+  if (projectGovernance) {
+    lines.push("");
+    lines.push("项目治理约束（.forgeops/governance.md 摘要）：");
+    lines.push(clipSection(projectGovernance, 1400));
+  }
+  lines.push("先读取项目上下文（如 AGENTS.md、README、.forgeops/context.md），再执行改动。");
+  lines.push("输出保持 Command / Result / Next 三段，先探测后改动。");
+
+  if (userPrompt) {
+    lines.push("");
+    lines.push("用户初始请求：");
+    lines.push(userPrompt);
+  } else {
+    lines.push("");
+    lines.push(`先回一句：已进入项目协作会话（${projectName || projectId || "unknown"}），等待任务指令。`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildProjectLocalOnlyReminderPrompt(userPrompt = "") {
+  const instruction = [
+    "LOCAL_ONLY 模式提醒：",
+    "- 仅进行本地代码与文档修改、构建、测试、调试。",
+    "- 禁止执行 `forgeops issue *` 与 `forgeops run *` 命令。",
+    "- 如需走流水线，先让用户确认退出 LOCAL_ONLY 模式。",
+  ].join("\n");
+  const promptText = String(userPrompt ?? "").trim();
+  if (!promptText) return instruction;
+  return `${instruction}\n\n用户请求：\n${promptText}`;
+}
+
+async function commandCodex(_store, args) {
+  const head = String(args[0] ?? "").trim().toLowerCase();
+  if (head === "help" || head === "--help" || head === "-h") {
+    process.stdout.write(
+      "Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill]\n"
+      + "       forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only]\n"
+    );
+    return;
+  }
+  const action = !head || head.startsWith("-") ? "session" : head;
+  const commandArgs = (action === "session" && head === "session") || (action === "project" && head === "project")
+    ? args.slice(1)
+    : args;
+
+  if (action !== "session" && action !== "project") {
+    fail("Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill]\n"
+      + "       forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only]");
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    fail("forgeops codex session/project requires an interactive TTY terminal");
+  }
+
+  const cwdFlag = String(getFlag(commandArgs, "--cwd", "") ?? "").trim();
+  let projectScope = null;
+  let projectLookupCwd = "";
+  if (action === "project") {
+    const projectId = String(getFlag(commandArgs, "--project", "") ?? "").trim();
+    projectLookupCwd = path.resolve(cwdFlag || process.cwd());
+    if (projectId) {
+      projectScope = _store.getProject(projectId);
+      if (!projectScope) {
+        fail(`Project not found: ${projectId}`);
+      }
+      if (!isPathWithinWorkspace(projectLookupCwd, projectScope.root_path)) {
+        fail(`--cwd is outside project root: cwd=${projectLookupCwd} root=${projectScope.root_path}`);
+      }
+    } else {
+      projectScope = resolveManagedProjectByPath(_store, projectLookupCwd);
+      if (!projectScope) {
+        fail(`No managed project found for cwd: ${projectLookupCwd}\nHint: run in project dir, or pass --project PROJECT_ID.`);
+      }
+    }
+  }
+
+  const defaultLaunchCwd = action === "project"
+    ? String(projectScope?.root_path ?? "").trim()
+    : REPO_ROOT;
+  const launchCwd = path.resolve(cwdFlag || defaultLaunchCwd);
+
+  if (!fs.existsSync(launchCwd)) {
+    fail(`CWD not found: ${launchCwd}`);
+  }
+
+  const defaultSessionKey = action === "project"
+    ? `project:${projectScope?.id ?? "unknown"}`
+    : "forgeops-meta";
+  const sessionKey = String(getFlag(commandArgs, "--session-key", defaultSessionKey) ?? defaultSessionKey).trim();
+  const trackingKey = resolveCodexSessionTrackingKey(launchCwd, sessionKey);
+
+  const clientPreference = String(getFlag(commandArgs, "--client", "auto") ?? "auto").trim().toLowerCase();
+  if (!["auto", "app", "cli"].includes(clientPreference)) {
+    fail("--client must be one of: auto, app, cli");
+  }
+
+  const includeMetaSkillByDefault = action !== "project";
+  const includeMetaSkill = commandArgs.includes("--no-meta-skill")
+    ? false
+    : (commandArgs.includes("--meta-skill") ? true : includeMetaSkillByDefault);
+  const metaSkillPath = path.resolve(getFlag(commandArgs, "--meta-skill", DEFAULT_META_SKILL_PATH));
+  if (includeMetaSkill && !fs.existsSync(metaSkillPath)) {
+    fail(`Meta skill not found: ${metaSkillPath}`);
+  }
+  const localOnly = action === "project" && commandArgs.includes("--local-only");
+  if (action !== "project" && commandArgs.includes("--local-only")) {
+    fail("--local-only is only supported by: forgeops codex project");
+  }
+
+  const userPromptRaw = String(getFlag(commandArgs, "--prompt", "") ?? "").trim();
+  const userPrompt = localOnly
+    ? buildProjectLocalOnlyReminderPrompt(userPromptRaw)
+    : userPromptRaw;
+  const codexBin = String(process.env.FORGEOPS_CODEX_BIN ?? "codex").trim() || "codex";
+  const model = String(getFlag(commandArgs, "--model", "") ?? "").trim();
+  const projectContextSeed = action === "project" && projectScope
+    ? String(_store.loadProjectContext(projectScope.root_path) ?? "").trim()
+    : "";
+  const projectGovernanceSeed = action === "project" && projectScope
+    ? String(_store.loadProjectGovernance(projectScope.root_path) ?? "").trim()
+    : "";
+  const enforceDangerSandbox = parseBool(process.env.FORGEOPS_ENFORCE_DANGER_SANDBOX, true) !== false;
+  let tracked = getTrackedCodexWorkspaceSession(launchCwd, sessionKey);
+  const appInstalled = isCodexAppInstalled();
+  if (!tracked?.threadId) {
+    const seeded = findLatestInteractiveCodexSessionForCwd(launchCwd, { maxScan: 400 });
+    if (seeded?.sessionId) {
+      setTrackedCodexWorkspaceSession(launchCwd, sessionKey, {
+        threadId: seeded.sessionId,
+        updatedAt: seeded.timestamp || new Date().toISOString(),
+        source: seeded.source,
+        sessionFile: seeded.filePath,
+        workspaceCwd: launchCwd,
+        model,
+        metaSkillPath: includeMetaSkill ? metaSkillPath : "",
+      });
+      tracked = getTrackedCodexWorkspaceSession(launchCwd, sessionKey);
+    }
+  }
+  const hasTrackedThread = Boolean(tracked?.threadId);
+
+  let resolvedClient = "cli";
+  if (clientPreference === "cli") {
+    resolvedClient = "cli";
+  } else if (clientPreference === "app") {
+    resolvedClient = appInstalled ? "app" : "cli";
+  } else {
+    resolvedClient = "cli";
+  }
+
+  process.stdout.write("Starting ForgeOps Codex session entry…\n");
+  process.stdout.write(`- agent-profile: ${action === "project" ? "project-copilot" : "forgeops-coach"}\n`);
+  if (projectScope) {
+    process.stdout.write(`- project: ${projectScope.id} (${projectScope.name})\n`);
+  }
+  process.stdout.write(`- cwd: ${launchCwd}\n`);
+  process.stdout.write(`- session-key: ${sessionKey || "(cwd scoped)"}\n`);
+  process.stdout.write(`- tracking-key: ${trackingKey}\n`);
+  process.stdout.write(`- client: ${resolvedClient} (requested=${clientPreference})\n`);
+  process.stdout.write(`- tracked-thread: ${tracked?.threadId ?? "(none)"}\n`);
+  process.stdout.write(`- meta-skill: ${includeMetaSkill ? metaSkillPath : "disabled"}\n`);
+  process.stdout.write(`- local-only: ${localOnly ? "true" : "false"}\n`);
+  process.stdout.write(`- model: ${model || "(codex default)"}\n`);
+
+  if (resolvedClient === "app") {
+    const appLaunch = spawnSync(codexBin, ["app", launchCwd], {
+      stdio: "inherit",
+      cwd: launchCwd,
+      env: process.env,
+    });
+    if (appLaunch.error) {
+      const message = appLaunch.error instanceof Error ? appLaunch.error.message : String(appLaunch.error);
+      process.stdout.write(`Codex App launch failed: ${message}\n`);
+      process.stdout.write("Falling back to Codex CLI session.\n");
+    } else if (typeof appLaunch.status === "number" && appLaunch.status !== 0) {
+      process.stdout.write(`Codex App exited with code ${appLaunch.status}. Falling back to Codex CLI session.\n`);
+    } else {
+      process.stdout.write(`Codex App opened. Resume thread in App: ${tracked?.threadId ?? "(untracked)"}\n`);
+      return;
+    }
+  } else if (clientPreference === "app" && !appInstalled) {
+    process.stdout.write("Codex App not installed. Falling back to Codex CLI session.\n");
+  } else if (clientPreference === "auto" && hasTrackedThread) {
+    process.stdout.write("Auto mode uses CLI resume to guarantee same tracked thread.\n");
+  } else if (clientPreference === "auto" && appInstalled && !hasTrackedThread) {
+    process.stdout.write("No tracked thread found yet; bootstrapping first session via Codex CLI.\n");
+  }
+
+  const sessionStartMs = Date.now();
+  let cliArgs = [];
+  if (hasTrackedThread) {
+    cliArgs = ["resume", "--cd", launchCwd];
+    if (enforceDangerSandbox) {
+      cliArgs.push("--sandbox", "danger-full-access", "--ask-for-approval", "never");
+    }
+    if (model) {
+      cliArgs.push("--model", model);
+    }
+    cliArgs.push(tracked.threadId);
+    if (userPrompt) {
+      cliArgs.push(userPrompt);
+    }
+    process.stdout.write(`Resuming tracked thread via CLI: ${tracked.threadId}\n`);
+  } else {
+    const bootstrapPrompt = action === "project"
+      ? buildProjectBootstrapPrompt({
+          includeMetaSkill,
+          metaSkillPath,
+          userPrompt,
+          project: projectScope,
+          launchCwd,
+          projectContext: projectContextSeed,
+          projectGovernance: projectGovernanceSeed,
+          localOnly,
+        })
+      : buildMetaSkillBootstrapPrompt({
+          includeMetaSkill,
+          metaSkillPath,
+          userPrompt,
+        });
+    cliArgs = ["--cd", launchCwd];
+    if (enforceDangerSandbox) {
+      cliArgs.push("--sandbox", "danger-full-access", "--ask-for-approval", "never");
+    }
+    if (model) {
+      cliArgs.push("--model", model);
+    }
+    cliArgs.push(bootstrapPrompt);
+    process.stdout.write("Launching new tracked CLI thread (source-kind=cli).\n");
+  }
+
+  const cliLaunch = spawnSync(codexBin, cliArgs, {
+    stdio: "inherit",
+    cwd: launchCwd,
+    env: process.env,
+  });
+
+  if (cliLaunch.error) {
+    const msg = cliLaunch.error instanceof Error ? cliLaunch.error.message : String(cliLaunch.error);
+    fail(`Failed to launch codex session: ${msg}`);
+  }
+  const cliExitCode = typeof cliLaunch.status === "number" ? cliLaunch.status : 0;
+
+  const discovered = findLatestInteractiveCodexSessionForCwd(launchCwd, {
+    minTimestampMs: hasTrackedThread ? 0 : (sessionStartMs - 2_000),
+    maxScan: 400,
+  });
+  if (discovered?.sessionId) {
+    setTrackedCodexWorkspaceSession(launchCwd, sessionKey, {
+      threadId: discovered.sessionId,
+      updatedAt: discovered.timestamp || new Date().toISOString(),
+      source: discovered.source,
+      sessionFile: discovered.filePath,
+      workspaceCwd: launchCwd,
+      model,
+      metaSkillPath: includeMetaSkill ? metaSkillPath : "",
+    });
+    process.stdout.write(`Tracked thread updated: ${discovered.sessionId}\n`);
+    if (cliExitCode !== 0) {
+      process.exit(cliExitCode);
+    }
+    return;
+  }
+
+  if (hasTrackedThread) {
+    setTrackedCodexWorkspaceSession(launchCwd, sessionKey, {
+      threadId: tracked.threadId,
+      updatedAt: new Date().toISOString(),
+      source: tracked.source || "cli",
+      sessionFile: tracked.sessionFile || "",
+      workspaceCwd: launchCwd || tracked.workspaceCwd || "",
+      model: model || tracked.model || "",
+      metaSkillPath: includeMetaSkill ? metaSkillPath : (tracked.metaSkillPath || ""),
+    });
+    process.stdout.write(`Tracked thread preserved: ${tracked.threadId}\n`);
+    if (cliExitCode !== 0) {
+      process.exit(cliExitCode);
+    }
+    return;
+  }
+
+  process.stdout.write("Warning: unable to discover latest interactive thread id; next launch may require bootstrap again.\n");
+  if (cliExitCode !== 0) {
+    process.exit(cliExitCode);
+  }
 }
 
 async function commandStart(args) {
@@ -1065,6 +2093,11 @@ async function main() {
 
     if (command === "workflow") {
       await commandWorkflow(store, args.slice(1));
+      return;
+    }
+
+    if (command === "codex") {
+      await commandCodex(store, args.slice(1));
       return;
     }
 

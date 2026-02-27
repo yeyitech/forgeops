@@ -1,7 +1,7 @@
 # User-Global 技能库与审计链路（ForgeOps Home）
 
 Status: Active  
-Updated: 2026-02-26
+Updated: 2026-02-27
 
 ## 背景
 
@@ -55,6 +55,11 @@ Updated: 2026-02-26
 3. 生成/更新全局技能文件与 `audit.ndjson`。
 4. 推送分支并创建 draft PR，等待人审。
 
+自动化补充：
+
+1. 可由 scheduler 的 `globalSkillPromotion` 定时触发候选评估与 PR 创建。
+2. 自动触发与手动触发共用同一晋升实现，保证审计字段一致。
+
 ## 不变量
 
 1. user-global 晋升不是 run step，不进入默认需求 DAG。
@@ -66,3 +71,4 @@ Updated: 2026-02-26
 1. 项目内闭环：`docs/design/issue-driven-taste-and-skill-loop.md`
 2. 本地演化：`docs/design/skill-evolution-closed-loop.md`
 3. 群体进化：`docs/design/skill-collective-evolution-service.md`
+4. 自动晋升调度：`docs/design/skill-auto-promotion-scheduler.md`

@@ -7,6 +7,7 @@ const DEFAULT_WORKFLOW_CONTROLS = Object.freeze({
   autoMerge: true,
   mergeMethod: "squash",
   autoCloseIssueOnMerge: true,
+  autoMergeConflictMaxAttempts: 2,
 });
 const WORKFLOW_MERGE_METHODS = new Set(["squash", "merge", "rebase"]);
 const DEFAULT_WORKFLOW_FALLBACK_STEP_KEYS = Object.freeze([
@@ -17,6 +18,9 @@ const DEFAULT_WORKFLOW_FALLBACK_STEP_KEYS = Object.freeze([
   "review",
   "cleanup",
 ]);
+const LEGACY_STEP_KEY_ALIASES = Object.freeze({
+  "platform-smoke": "test",
+});
 
 const SHARED_OUTPUT_CONTRACT = `
 Output requirements (strict):
@@ -56,6 +60,23 @@ function normalizeWorkflowMergeMethod(value, fallback = "squash", sourceLabel = 
     );
   }
   return fallback;
+}
+
+function normalizeWorkflowMergeConflictMaxAttempts(value, fallback = 2, sourceLabel = "") {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+  const raw = Number(value);
+  const parsed = Number.isFinite(raw) ? Math.floor(raw) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 8) {
+    if (sourceLabel) {
+      throw new Error(
+        `Invalid workflow config: auto_merge_conflict_max_attempts must be an integer in [0, 8] in ${sourceLabel}`
+      );
+    }
+    return fallback;
+  }
+  return parsed;
 }
 
 function parseNonNegativeInt(value, fallback) {
@@ -237,6 +258,21 @@ function renderAgentSkillsSection(ctx, agentId) {
   return `Assigned skills:\n${lines.join("\n")}\n\nSkill loading policy:\n- Load only the needed SKILL.md files listed above.\n- Keep context usage minimal and task-relevant.\n`;
 }
 
+function renderSkillAuthoringSection(ctx) {
+  const projectRoot = String(ctx?.project?.rootPath ?? "").trim();
+  const projectSkillPath = projectRoot
+    ? `${projectRoot}/.forgeops/skills/<skill-name>/SKILL.md`
+    : ".forgeops/skills/<skill-name>/SKILL.md";
+  return [
+    "Skill authoring policy:",
+    "- Codex runtime already includes system skill `skill-creator`.",
+    "- When task involves creating/updating skills, prefer weak guidance and let `skill-creator` shape SKILL.md.",
+    `- Project-local target path: ${projectSkillPath}`,
+    "- User-global target path: ~/.forgeops/skills-global/skills/<skill-name>/SKILL.md",
+    "- SKILL.md must keep standard frontmatter: name + description.",
+  ].join("\n") + "\n";
+}
+
 function renderGovernanceSection(ctx) {
   const text = String(ctx.projectGovernance ?? "").trim();
   if (!text) {
@@ -338,6 +374,7 @@ ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
 ${renderAgentSkillsSection(ctx, "issue-manager")}
+${renderSkillAuthoringSection(ctx)}
 
 Previous outputs:
 ${JSON.stringify(ctx.stepOutputs, null, 2)}
@@ -380,6 +417,7 @@ ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
 ${renderAgentSkillsSection(ctx, "developer")}
+${renderSkillAuthoringSection(ctx)}
 Issue context:
 ${JSON.stringify(ctx.stepOutputs.issue ?? {}, null, 2)}
 
@@ -423,60 +461,25 @@ Goals:
    - node .forgeops/tools/platform-smoke.mjs --strict --json
 6. If smoke/health checks fail due local port conflict (EPERM/EADDRINUSE/port in use), rerun once with another free local port.
 7. For rerun, set env explicitly: PORT, FORGEOPS_BACKEND_PORT, FORGEOPS_BACKEND_HEALTH_URL.
-8. If productType=miniapp, include WeChat miniapp acceptance evidence (entry files/routes/devtools readiness).
-9. If productType=web, include browser runtime evidence (DOM/network or equivalent smoke proof).
-10. If productType=ios, include simulator/build evidence (xcodebuild/simctl outputs).
-11. If productType=microservice, include Python dependency bootstrap evidence (uv/poetry/pip) and backend health endpoint evidence.
-12. If productType=android, include Android build/runtime evidence (Gradle tasks, module/app manifest readiness, emulator/device probe if available).
-13. If productType=serverless, include function trigger/runtime evidence (deploy toolchain + local invoke/smoke output).
-14. Run invariant checks with: node .forgeops/tools/check-invariants.mjs --format json (if file exists).
-15. In high-throughput mode, treat flaky/non-critical failures as follow-up unless they are high severity.
-16. If a blocking issue is safely fixable with a small patch (suggested budget: files<=6, lines<=200), apply the fix directly in this branch.
-17. After self-fix, rerun the relevant checks and report concrete before/after evidence.
-18. Return status=retry only when another verification turn is needed after your self-fix.
-19. Return status=failed only when blocking risk is not safely fixable in-budget, and provide explicit manual handoff.
-
-${SHARED_OUTPUT_CONTRACT}
-`,
-  },
-  {
-    key: "platform-smoke",
-    agentId: "tester",
-    runtime: "codex-exec-json",
-    model: "gpt-5.3-codex",
-    maxRetries: 2,
-    buildPrompt: (ctx) => `You are the Platform Smoke Agent.
-
-Project path: ${ctx.project.rootPath}
-Product type: ${ctx.project.productType}
-Task: ${ctx.task}
-${renderProjectContextSection(ctx)}
-${renderGitHubFlowSection(ctx)}
-${renderTechProfileSection(ctx)}
-${renderGovernanceSection(ctx)}
-${renderInvariantSection(ctx)}
-${renderAgentSkillsSection(ctx, "tester")}
-Test outputs:
-${JSON.stringify(ctx.stepOutputs.test ?? {}, null, 2)}
-
-Goals:
-1. Verify platform runtime gate (not only unit/integration tests).
-2. Run project platform preflight script when available:
-   - node .forgeops/tools/platform-preflight.mjs --strict --json
-3. Run project platform smoke script when available:
-   - node .forgeops/tools/platform-smoke.mjs --strict --json
-4. If smoke fails due local port binding conflict (EPERM/EADDRINUSE/port in use), select another free local port and rerun once.
-5. For rerun, set env explicitly: PORT, FORGEOPS_BACKEND_PORT, FORGEOPS_BACKEND_HEALTH_URL.
-6. If productType=miniapp, include WeChat miniapp acceptance evidence (entry files/routes/devtools readiness).
-7. If productType=web, include browser runtime evidence (DOM/network or equivalent smoke proof).
-8. If productType=ios, include simulator/build evidence (xcodebuild/simctl outputs).
-9. If productType=microservice, include Python dependency bootstrap evidence (uv/poetry/pip) and backend health endpoint evidence.
-10. If productType=android, include Android build/runtime evidence (Gradle tasks, module/app manifest readiness, emulator/device probe if available).
-11. If productType=serverless, include function trigger/runtime evidence (deploy toolchain + local invoke/smoke output).
-12. If a blocking platform risk is safely fixable with a small patch (suggested budget: files<=6, lines<=200), apply fix directly and rerun smoke.
-13. Return status=retry only when another turn is required after your self-fix.
-14. Return status=failed only when blocking risk cannot be safely fixed in-budget, with explicit manual handoff.
-15. Output one artifact summarizing platform gate result and key command outputs.
+8. Run product-specific runtime smoke command when available:
+   - miniapp: FORGEOPS_MINIAPP_DEBUG_CMD or smoke:miniapp/miniapp:smoke/test:miniapp
+   - web: FORGEOPS_WEB_SMOKE_CMD or smoke:web/test:e2e/e2e
+   - ios: FORGEOPS_IOS_SMOKE_CMD (fallback xcodebuild -list)
+   - microservice: FORGEOPS_MICROSERVICE_SMOKE_CMD (optional); always include deps sync + backend health evidence
+   - android: FORGEOPS_ANDROID_SMOKE_CMD (fallback Android build command)
+   - serverless: FORGEOPS_SERVERLESS_SMOKE_CMD or smoke:serverless/test:functions/verify/test
+9. If productType=miniapp, include WeChat miniapp acceptance evidence (entry files/routes/devtools readiness + startup/debug output when command configured).
+10. If productType=web, include browser runtime evidence (DOM/network or equivalent smoke proof).
+11. If productType=ios, include simulator/build evidence (xcodebuild/simctl outputs).
+12. If productType=microservice, include Python dependency bootstrap evidence (uv/poetry/pip), backend health endpoint evidence, and runtime smoke output when configured.
+13. If productType=android, include Android build/runtime evidence (Gradle tasks, module/app manifest readiness, emulator/device probe if available).
+14. If productType=serverless, include function trigger/runtime evidence (deploy toolchain + local invoke/smoke output).
+15. Run invariant checks with: node .forgeops/tools/check-invariants.mjs --format json (if file exists).
+16. In high-throughput mode, treat flaky/non-critical failures as follow-up unless they are high severity.
+17. If a blocking issue is safely fixable with a small patch (suggested budget: files<=6, lines<=200), apply the fix directly in this branch.
+18. After self-fix, rerun the relevant checks and report concrete before/after evidence.
+19. Return status=retry only when another verification turn is needed after your self-fix.
+20. Return status=failed only when blocking risk is not safely fixable in-budget, and provide explicit manual handoff.
 
 ${SHARED_OUTPUT_CONTRACT}
 `,
@@ -534,6 +537,7 @@ ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
 ${renderAgentSkillsSection(ctx, "garbage-collector")}
+${renderSkillAuthoringSection(ctx)}
 Pipeline outputs:
 ${JSON.stringify(ctx.stepOutputs, null, 2)}
 
@@ -577,6 +581,12 @@ export function getWorkflowSteps() {
 
 export function getStepByKey(stepKey) {
   return STEP_BY_KEY.get(stepKey) ?? null;
+}
+
+function normalizeWorkflowTemplateKey(rawKey) {
+  const key = String(rawKey ?? "").trim();
+  if (!key) return "";
+  return LEGACY_STEP_KEY_ALIASES[key] ?? key;
 }
 
 function parseScalar(rawValue) {
@@ -634,6 +644,7 @@ function parseWorkflowYaml(content) {
   let autoMerge = "";
   let mergeMethod = "";
   let autoCloseIssueOnMerge = "";
+  let autoMergeConflictMaxAttempts = "";
   const stepsRaw = [];
   let inSteps = false;
   let stepsIndent = 0;
@@ -706,6 +717,15 @@ function parseWorkflowYaml(content) {
         continue;
       }
 
+      if (trimmed.startsWith("auto_merge_conflict_max_attempts:")) {
+        autoMergeConflictMaxAttempts = parseScalar(trimmed.slice("auto_merge_conflict_max_attempts:".length));
+        continue;
+      }
+      if (trimmed.startsWith("autoMergeConflictMaxAttempts:")) {
+        autoMergeConflictMaxAttempts = parseScalar(trimmed.slice("autoMergeConflictMaxAttempts:".length));
+        continue;
+      }
+
       if (trimmed.startsWith("steps:")) {
         inSteps = true;
         stepsIndent = indent;
@@ -769,7 +789,15 @@ function parseWorkflowYaml(content) {
     flushCurrentStepObj();
   }
 
-  return { id, name, autoMerge, mergeMethod, autoCloseIssueOnMerge, stepsRaw };
+  return {
+    id,
+    name,
+    autoMerge,
+    mergeMethod,
+    autoCloseIssueOnMerge,
+    autoMergeConflictMaxAttempts,
+    stepsRaw,
+  };
 }
 
 function parseOptionalStepMaxRetries(rawValue, configPath, stepKey) {
@@ -895,7 +923,7 @@ function normalizeWorkflowSteps(stepsRaw, configPath) {
     const seen = new Set();
     const nodes = [];
     for (let i = 0; i < stepsRaw.length; i += 1) {
-      const key = String(stepsRaw[i]);
+      const key = normalizeWorkflowTemplateKey(stepsRaw[i]);
       if (seen.has(key)) {
         duplicated.push(key);
         continue;
@@ -906,7 +934,7 @@ function normalizeWorkflowSteps(stepsRaw, configPath) {
         unknown.push(key);
         continue;
       }
-      const dependsOn = i === 0 ? [] : [String(stepsRaw[i - 1])];
+      const dependsOn = i === 0 ? [] : [String(nodes[i - 1]?.key ?? "")].filter(Boolean);
       nodes.push(createWorkflowNode(template, key, dependsOn, { configPath }));
     }
     if (duplicated.length > 0) {
@@ -933,7 +961,7 @@ function normalizeWorkflowSteps(stepsRaw, configPath) {
       throw new Error(`Invalid workflow config: step #${i + 1} is not valid in ${configPath}`);
     }
 
-    const templateKey = String(obj.use ?? obj.template ?? obj.key ?? "").trim();
+    const templateKey = normalizeWorkflowTemplateKey(obj.use ?? obj.template ?? obj.key ?? "");
     if (!templateKey) {
       throw new Error(`Invalid workflow config: step #${i + 1} missing key/use/template in ${configPath}`);
     }
@@ -955,9 +983,13 @@ function normalizeWorkflowSteps(stepsRaw, configPath) {
 
     let dependsOnRaw;
     if (Array.isArray(obj.depends_on)) {
-      dependsOnRaw = obj.depends_on.map((item) => String(item).trim()).filter(Boolean);
+      dependsOnRaw = obj.depends_on
+        .map((item) => normalizeWorkflowTemplateKey(item))
+        .filter(Boolean);
     } else if (obj.depends_on !== undefined) {
-      dependsOnRaw = parseInlineArray(String(obj.depends_on));
+      dependsOnRaw = parseInlineArray(String(obj.depends_on))
+        .map((item) => normalizeWorkflowTemplateKey(item))
+        .filter(Boolean);
     } else {
       dependsOnRaw = undefined;
     }
@@ -1025,6 +1057,11 @@ export function resolveWorkflowFromContent(content, sourceLabel = "<inline-workf
     autoCloseIssueOnMerge: parseBooleanLike(
       parsed.autoCloseIssueOnMerge,
       DEFAULT_WORKFLOW_CONTROLS.autoCloseIssueOnMerge,
+    ),
+    autoMergeConflictMaxAttempts: normalizeWorkflowMergeConflictMaxAttempts(
+      parsed.autoMergeConflictMaxAttempts,
+      DEFAULT_WORKFLOW_CONTROLS.autoMergeConflictMaxAttempts,
+      sourceLabel,
     ),
   };
 

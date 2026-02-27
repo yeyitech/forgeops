@@ -159,6 +159,103 @@ function launchdTarget(label) {
   return `${launchdDomain()}/${label}`;
 }
 
+function extractLaunchdRawState(detail) {
+  const text = String(detail ?? "");
+  const match = text.match(/^\s*state = ([^\n]+)$/m);
+  if (!match) return "";
+  return String(match[1] ?? "").trim();
+}
+
+function normalizeLaunchdLifecycle(rawState, loaded) {
+  if (!loaded) return "not_loaded";
+  const raw = String(rawState ?? "").trim();
+  if (!raw) return "loaded";
+  const lower = raw.toLowerCase();
+  if (lower === "running") return "running";
+  if (lower.includes("sigterm") || lower.includes("terminated")) return "terminating";
+  if (lower.includes("spawn") || lower.includes("starting") || lower.includes("init")) return "starting";
+  if (lower.includes("waiting")) return "waiting";
+  if (lower.includes("exited")) return "exited";
+  if (lower.includes("stopped")) return "stopped";
+  return lower.replace(/\s+/g, "_");
+}
+
+function sleepSync(ms) {
+  const waitMs = Math.max(0, Math.floor(Number(ms) || 0));
+  if (waitMs <= 0) return;
+  const marker = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(marker, 0, 0, waitMs);
+}
+
+function readLaunchdServiceSnapshot(target) {
+  const printRes = runCommand("launchctl", ["print", target], { allowFailure: true });
+  const detail = printRes.ok ? printRes.stdout : (printRes.stderr || printRes.error || "service not loaded");
+  const loaded = Boolean(printRes.ok);
+  const rawState = extractLaunchdRawState(detail);
+  const lifecycle = normalizeLaunchdLifecycle(rawState, loaded);
+  return {
+    loaded,
+    running: loaded && lifecycle === "running",
+    lifecycle,
+    rawState,
+    detail,
+  };
+}
+
+function isLaunchdServiceLoaded(target) {
+  return readLaunchdServiceSnapshot(target).loaded;
+}
+
+function waitLaunchdServiceUnloaded(target, timeoutMs = 3000) {
+  const deadline = Date.now() + Math.max(200, Math.floor(Number(timeoutMs) || 3000));
+  while (Date.now() < deadline) {
+    if (!isLaunchdServiceLoaded(target)) {
+      return true;
+    }
+    sleepSync(120);
+  }
+  return !isLaunchdServiceLoaded(target);
+}
+
+function waitLaunchdServiceRunning(target, timeoutMs = 4000) {
+  const deadline = Date.now() + Math.max(200, Math.floor(Number(timeoutMs) || 4000));
+  while (Date.now() < deadline) {
+    const snapshot = readLaunchdServiceSnapshot(target);
+    if (snapshot.running) return true;
+    sleepSync(120);
+  }
+  return readLaunchdServiceSnapshot(target).running;
+}
+
+function bootstrapLaunchdServiceWithRetry(params) {
+  const domain = String(params?.domain ?? "").trim();
+  const plistPath = String(params?.plistPath ?? "").trim();
+  const target = String(params?.target ?? "").trim();
+  const errorPrefix = String(params?.errorPrefix ?? "launchd bootstrap 失败");
+  const maxAttempts = Math.max(1, Math.min(8, Number(params?.maxAttempts ?? 5)));
+  let lastDetail = "unknown";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const res = runCommand("launchctl", ["bootstrap", domain, plistPath], { allowFailure: true });
+    if (res.ok) return;
+
+    const detail = res.stderr || res.stdout || res.error || `exit code ${res.status}`;
+    lastDetail = detail;
+    const lower = detail.toLowerCase();
+    const transient = lower.includes("bootstrap failed: 5") || lower.includes("input/output error");
+    if (!transient || attempt >= maxAttempts) {
+      throw new Error(`${errorPrefix}: ${detail}`);
+    }
+
+    if (target) {
+      waitLaunchdServiceUnloaded(target, 1500);
+    }
+    sleepSync(180 * attempt);
+  }
+
+  throw new Error(`${errorPrefix}: ${lastDetail}`);
+}
+
 function buildLaunchdPlist(cfg) {
   const args = [cfg.nodeBin, cfg.cliScriptPath, ...getStartArgs(cfg)];
   const argLines = args.map((item) => `    <string>${xmlEscape(item)}</string>`).join("\n");
@@ -229,19 +326,23 @@ function ensureSupportedPlatform(cfg) {
 function serviceStatusDarwin(cfg) {
   const installed = fs.existsSync(cfg.launchdPlistPath);
   const target = launchdTarget(cfg.serviceLabel);
-  const printRes = runCommand("launchctl", ["print", target], { allowFailure: true });
-  const loaded = installed && printRes.ok;
+  const snapshot = readLaunchdServiceSnapshot(target);
+  const loaded = installed && snapshot.loaded;
+  const running = installed && snapshot.running;
   return {
     manager: "launchd",
     platform: cfg.platform,
     installed,
     loaded,
+    running,
+    lifecycle: snapshot.lifecycle,
+    rawState: snapshot.rawState,
     enabled: loaded,
     serviceId: cfg.serviceLabel,
     servicePath: cfg.launchdPlistPath,
     stdoutLogPath: cfg.stdoutLogPath,
     stderrLogPath: cfg.stderrLogPath,
-    detail: printRes.ok ? printRes.stdout : (printRes.stderr || printRes.error || "service not loaded"),
+    detail: snapshot.detail,
   };
 }
 
@@ -253,13 +354,18 @@ function installDarwin(cfg, options = {}) {
   if (options.startNow !== false) {
     const domain = launchdDomain();
     const target = launchdTarget(cfg.serviceLabel);
-    runCommand("launchctl", ["bootout", domain, target], { allowFailure: true });
-    runCommand("launchctl", ["bootstrap", domain, cfg.launchdPlistPath], {
+    runCommand("launchctl", ["bootout", target], { allowFailure: true });
+    waitLaunchdServiceUnloaded(target, 4000);
+    bootstrapLaunchdServiceWithRetry({
+      domain,
+      plistPath: cfg.launchdPlistPath,
+      target,
       errorPrefix: "launchd install 失败",
     });
     runCommand("launchctl", ["kickstart", "-k", target], {
       errorPrefix: "launchd 启动失败",
     });
+    waitLaunchdServiceRunning(target, 5000);
   }
   return serviceStatusDarwin(cfg);
 }
@@ -270,20 +376,25 @@ function startDarwin(cfg) {
   }
   const domain = launchdDomain();
   const target = launchdTarget(cfg.serviceLabel);
-  runCommand("launchctl", ["bootout", domain, target], { allowFailure: true });
-  runCommand("launchctl", ["bootstrap", domain, cfg.launchdPlistPath], {
+  runCommand("launchctl", ["bootout", target], { allowFailure: true });
+  waitLaunchdServiceUnloaded(target, 4000);
+  bootstrapLaunchdServiceWithRetry({
+    domain,
+    plistPath: cfg.launchdPlistPath,
+    target,
     errorPrefix: "launchd 启动失败",
   });
   runCommand("launchctl", ["kickstart", "-k", target], {
     errorPrefix: "launchd kickstart 失败",
   });
+  waitLaunchdServiceRunning(target, 5000);
   return serviceStatusDarwin(cfg);
 }
 
 function stopDarwin(cfg) {
-  const domain = launchdDomain();
   const target = launchdTarget(cfg.serviceLabel);
-  runCommand("launchctl", ["bootout", domain, target], { allowFailure: true });
+  runCommand("launchctl", ["bootout", target], { allowFailure: true });
+  waitLaunchdServiceUnloaded(target, 4000);
   return serviceStatusDarwin(cfg);
 }
 
@@ -318,11 +429,18 @@ function serviceStatusLinux(cfg) {
   const installed = fs.existsSync(cfg.systemdUnitPath);
   const enabledRes = systemctlUser(["is-enabled", cfg.systemdUnitName], { allowFailure: true });
   const activeRes = systemctlUser(["is-active", cfg.systemdUnitName], { allowFailure: true });
+  const loaded = activeRes.ok && activeRes.stdout === "active";
+  const lifecycle = activeRes.ok
+    ? (String(activeRes.stdout || "").trim() || "unknown")
+    : "inactive";
   return {
     manager: "systemd-user",
     platform: cfg.platform,
     installed,
-    loaded: activeRes.ok && activeRes.stdout === "active",
+    loaded,
+    running: loaded,
+    lifecycle,
+    rawState: activeRes.ok ? String(activeRes.stdout || "").trim() : "",
     enabled: enabledRes.ok && enabledRes.stdout === "enabled",
     serviceId: cfg.systemdUnitName,
     servicePath: cfg.systemdUnitPath,

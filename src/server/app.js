@@ -102,6 +102,13 @@ function resolveDirectoryPickerStartPath(rawPath) {
   return path.resolve(text);
 }
 
+function parseRunModeInput(value, fallback = "standard") {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallback;
+  if (text === "standard" || text === "quick") return text;
+  throw new Error(`Invalid run mode: ${text}`);
+}
+
 function pickDirectoryWithNativeDialog(startPath) {
   const resolvedStart = resolveDirectoryPickerStartPath(startPath);
   const validStart = fs.existsSync(resolvedStart) && fs.statSync(resolvedStart).isDirectory()
@@ -269,6 +276,13 @@ export function createServerApp(params) {
         sendJson(res, 200, {
           ...cfg,
           data: cfg,
+        });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/system/token-usage") {
+        sendJson(res, 200, {
+          data: store.getGlobalTokenUsageMetrics({ trendDays: 7 }),
         });
         return;
       }
@@ -735,11 +749,20 @@ export function createServerApp(params) {
           return;
         }
         try {
+          const runMode = parseRunModeInput(body.runMode, "standard");
+          const labels = Array.isArray(body.labels)
+            ? body.labels.map((item) => String(item ?? "").trim()).filter(Boolean)
+            : [];
+          if (runMode === "quick" && !labels.some((item) => item.toLowerCase() === "forgeops:quick")) {
+            labels.push("forgeops:quick");
+          }
           const created = store.createIssueWithAutoRun({
             projectId,
             title: String(body.title),
             description: String(body.description ?? ""),
             autoRun: body.autoRun !== false,
+            runMode,
+            labels,
           });
           sendJson(res, 201, {
             data: created.issue,
@@ -756,6 +779,7 @@ export function createServerApp(params) {
             || message.startsWith("GitHub flow precheck failed:")
             || message.startsWith("创建 GitHub issue 失败")
             || message.startsWith("title is required")
+            || message.startsWith("Invalid run mode:")
           ) {
             sendJson(res, 400, { error: message });
             return;
@@ -787,6 +811,7 @@ export function createServerApp(params) {
             task: body.task === undefined || body.task === null
               ? ""
               : String(body.task),
+            runMode: parseRunModeInput(body.runMode, "standard"),
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -798,6 +823,7 @@ export function createServerApp(params) {
             || message.startsWith("Invalid workflow config:")
             || message.startsWith("GitHub flow precheck failed:")
             || message.startsWith("创建 worktree 失败:")
+            || message.startsWith("Invalid run mode:")
           ) {
             sendJson(res, 400, { error: message });
             return;
@@ -805,6 +831,24 @@ export function createServerApp(params) {
           throw err;
         }
         sendJson(res, 201, { data: run });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/runs/stop-all") {
+        const body = await readJsonBody(req);
+        const result = store.stopRuns({
+          projectId: body?.projectId,
+        });
+        sendJson(res, 200, { data: result });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/runs/resume-all") {
+        const body = await readJsonBody(req);
+        const result = store.resumePausedRuns({
+          projectId: body?.projectId,
+        });
+        sendJson(res, 200, { data: result });
         return;
       }
 
@@ -826,6 +870,18 @@ export function createServerApp(params) {
         const ok = store.resumeRun(runId);
         if (!ok) {
           sendJson(res, 400, { error: "Run cannot be resumed" });
+          return;
+        }
+        sendJson(res, 200, { data: { ok: true } });
+        return;
+      }
+
+      const runStopMatch = pathname.match(/^\/api\/runs\/([^/]+)\/stop$/);
+      if (runStopMatch && method === "POST") {
+        const runId = decodeURIComponent(runStopMatch[1]);
+        const ok = store.stopRun(runId);
+        if (!ok) {
+          sendJson(res, 400, { error: "Run cannot be stopped" });
           return;
         }
         sendJson(res, 200, { data: { ok: true } });

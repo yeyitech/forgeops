@@ -1,7 +1,7 @@
 # 架构总览
 
 Status: Active
-Updated: 2026-02-26
+Updated: 2026-02-27
 
 ## 范围
 
@@ -26,11 +26,12 @@ ForgeOps 负责“多步骤 AI 研发流水线”的控制与观测，强调：
 11. `cleanup` 步骤可产出技能候选并落盘到项目目录（`.forgeops/skills/candidates/`）以支持本地方法论沉淀。
 12. `implement/test/review` 完成后自动执行不变量检查器（机械 gate，若配置了 `platform-smoke` 也会执行）。
 13. 不变量 `error` 触发阻塞重试；`warn` 默认不阻塞，并在 `review` 步骤自动创建 follow-up GitHub issue。
-14. Scheduler 读取 `<projectRoot>/.forgeops/scheduler.yaml`，按 Cron 周期同时托管 cleanup 与 issueAutoRun（按 GitHub label 触发 run）；cleanup 支持 `lite|deep`，其中定时默认 `deep`（单节点 cleanup 工作流）。
+14. Scheduler 读取 `<projectRoot>/.forgeops/scheduler.yaml`，按 Cron 周期托管 cleanup、issueAutoRun、skillPromotion、globalSkillPromotion 四类任务（含按 GitHub label 触发 run 与技能候选自动晋升）。
 15. Store 推进 step/run 状态并记录事件与产物，同时聚合 `CI Gate` / `Platform Gate` 状态。
 16. API + SSE 实时供前端展示；同时支持通过 `attach-terminal` 旁观指定 run/step/session 的 Codex thread（只读观测语义）。
-17. 技能候选晋升走独立 PR 链路（CLI/API 手动触发 + 独立 worktree + draft PR 人审），不进入默认需求交付 DAG。
-18. user-global 技能库固定在 `$FORGEOPS_HOME/skills-global`，通过独立 PR + `audit.ndjson` 做跨项目审计与沉淀。
+17. 技能候选晋升走独立 PR 链路（手动 CLI/API + 定时自动晋升两种触发），统一通过独立 worktree + draft PR 人审，不进入默认需求交付 DAG。
+18. 自动晋升默认采用稳定技能目标路径（同名技能持续编辑演进），避免每轮候选都新增碎片技能文件。
+19. user-global 技能库固定在 `$FORGEOPS_HOME/skills-global`，通过独立 PR + `audit.ndjson` 做跨项目审计与沉淀。
 
 默认交付步骤（线性示例）：
 

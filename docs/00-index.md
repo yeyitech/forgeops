@@ -1,7 +1,7 @@
 # 文档地图（Docs Index）
 
 Status: Active
-Updated: 2026-02-26
+Updated: 2026-02-27
 
 ## 目的
 
@@ -16,9 +16,16 @@ Updated: 2026-02-26
 ## 仓库级入口（非 docs 目录）
 
 - `FORGEOPS_META_SKILL.md`
-  - 面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略）。
+  - 面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略，含 `project init` 默认自动打开 Dashboard 与 `--no-open-ui` 约束）。
 
 ## 目录索引
+
+### 快速入口（User）
+
+- `docs/user-quickstart.md`
+  - 面向用户的 1 页上手卡（最小命令集与模式选择规则）。
+- `docs/user-guide.md`
+  - 面向用户的操作手册（启动、模式选择、典型流程与故障排查）。
 
 ### 架构层（Architecture）
 
@@ -26,6 +33,8 @@ Updated: 2026-02-26
   - 控制平面边界、执行主循环、关键组件。
 - `docs/architecture/layering.md`
   - 分层依赖方向与禁止依赖规则。
+- `docs/architecture/ADR-0001.md`
+  - 当前架构基线与跨 issue 增量决策。
 - `docs/runtime-adapter-design.md`
   - Runtime Adapter 契约与当前 Codex 接入方式。
 
@@ -43,6 +52,8 @@ Updated: 2026-02-26
   - 基于 issue 注入用户偏好、自动补齐缺口并在 cleanup 沉淀技能候选（不新增实体）。
 - `docs/design/skill-promotion-pr-review-loop.md`
   - 基于候选技能创建独立晋升 PR，经人审后合并（与需求流水线解耦）。
+- `docs/design/skill-auto-promotion-scheduler.md`
+  - 定时扫描候选并自动提/更新 Draft PR（项目内与 user-global 双链路）。
 - `docs/design/user-global-skill-library.md`
   - 在 `$FORGEOPS_HOME/skills-global` 建立用户级全局技能库与审计链路。
 - `docs/design/platform-toolchain-quality-gate.md`
@@ -76,6 +87,11 @@ Updated: 2026-02-26
 - `docs/meta/doc-structure.md`
   - 文档结构完整性规则与索引约束。
 
+### 上下文层（Context）
+
+- `docs/context/index.md`
+  - 步骤级上下文文档索引与注册入口。
+
 ### 计划层（Plans）
 
 - `docs/exec-plans/active/README.md`
@@ -103,6 +119,7 @@ Updated: 2026-02-26
 - 设计技能群体进化中心服务：优先读 `docs/design/skill-collective-evolution-service.md`。
 - 设计“issue 注入偏好 + cleanup 沉淀技能候选”闭环：优先读 `docs/design/issue-driven-taste-and-skill-loop.md`。
 - 设计“候选技能 -> PR 人审晋升”闭环：优先读 `docs/design/skill-promotion-pr-review-loop.md`。
+- 设计“候选技能定时自动晋升”调度链路：优先读 `docs/design/skill-auto-promotion-scheduler.md`。
 - 设计 user-global 技能库与审计链路：优先读 `docs/design/user-global-skill-library.md`。
 - 改技能统一解析优先级（project-local > user-global > official）：优先读 `docs/architecture/00-overview.md` 与 `docs/quality/verification-status.md`。
 - 调优 Codex runtime 提示词/技能交互：优先读 `docs/design/codex-runtime-prompt-engineering.md`。

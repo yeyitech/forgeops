@@ -1,10 +1,12 @@
 import type {
   DoctorReport,
   EngineState,
+  GlobalTokenUsage,
   Issue,
   IssueCreateResult,
   Project,
   ProjectMetrics,
+  RunBatchActionResult,
   RunAttachTerminalResult,
   RunDetail,
   RunRow,
@@ -76,6 +78,8 @@ export async function createIssue(input: {
   title: string;
   description: string;
   autoRun?: boolean;
+  runMode?: "standard" | "quick";
+  labels?: string[];
 }): Promise<IssueCreateResult> {
   const payload = await jsonRequest<{
     data: Issue;
@@ -90,6 +94,8 @@ export async function createIssue(input: {
       title: input.title,
       description: input.description,
       autoRun: input.autoRun,
+      runMode: input.runMode,
+      labels: input.labels,
     }),
   });
   return {
@@ -110,6 +116,7 @@ export async function createRun(input: {
   projectId: string;
   task?: string;
   issueId: string;
+  runMode?: "standard" | "quick";
 }): Promise<RunRow> {
   const payload = await jsonRequest<{ data: RunRow }>("/api/runs", {
     method: "POST",
@@ -127,6 +134,32 @@ export async function resumeRun(runId: string): Promise<void> {
   await jsonRequest<{ data: { ok: boolean } }>(`/api/runs/${encodeURIComponent(runId)}/resume`, {
     method: "POST",
   });
+}
+
+export async function stopRun(runId: string): Promise<void> {
+  await jsonRequest<{ data: { ok: boolean } }>(`/api/runs/${encodeURIComponent(runId)}/stop`, {
+    method: "POST",
+  });
+}
+
+export async function stopAllRuns(projectId?: string): Promise<RunBatchActionResult> {
+  const payload = await jsonRequest<{ data: RunBatchActionResult }>("/api/runs/stop-all", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId: projectId || undefined,
+    }),
+  });
+  return payload.data;
+}
+
+export async function resumeAllPausedRuns(projectId?: string): Promise<RunBatchActionResult> {
+  const payload = await jsonRequest<{ data: RunBatchActionResult }>("/api/runs/resume-all", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId: projectId || undefined,
+    }),
+  });
+  return payload.data;
 }
 
 export async function attachRunTerminal(input: {
@@ -171,6 +204,17 @@ export async function getDoctorReport(): Promise<DoctorReport> {
 export async function getSystemConfig(): Promise<SystemConfig> {
   const payload = await jsonRequest<{ data: SystemConfig }>("/api/system/config");
   return payload.data;
+}
+
+export async function getGlobalTokenUsage(): Promise<GlobalTokenUsage | null> {
+  try {
+    const payload = await jsonRequest<{ data: GlobalTokenUsage }>("/api/system/token-usage");
+    return payload.data;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/not found/i.test(msg)) return null;
+    throw err;
+  }
 }
 
 export async function updateSystemConfig(input: {

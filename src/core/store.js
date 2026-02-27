@@ -12,6 +12,7 @@ import {
   closeGitHubIssue,
   cleanupRunWorktree,
   createRunWorktree,
+  autoResolvePullRequestMergeConflict,
   ensureGitHubPullRequestForRun,
   findGitHubPullRequestForBranch,
   getGitHubBranchProtection,
@@ -23,6 +24,7 @@ import {
   readGitHubIssuePrMetrics,
   syncDefaultBranchFromRemote,
   updateGitHubIssueLabels,
+  updateGitHubPullRequestLabels,
 } from "./git.js";
 import { loadProjectTechProfile, resolveAgentSkills } from "./skills.js";
 import { newId, nowIso, safeJsonParse, slugify } from "./utils.js";
@@ -34,6 +36,8 @@ const DB_PATH = path.join(DB_DIR, "forgeops.db");
 const USER_GLOBAL_SKILLS_ROOT = path.join(DB_DIR, "skills-global");
 const LOC_CACHE_TTL_MS = 30_000;
 const GITHUB_METRICS_CACHE_TTL_MS = 30_000;
+const MAINLINE_REF_FETCH_INTERVAL_MS = 5 * 60_000;
+const MAINLINE_REF_FETCH_RETRY_INTERVAL_MS = 60_000;
 const MAX_CODE_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 const MAX_DOC_FILE_SIZE_BYTES = 2 * 1024 * 1024;
 const CODE_FILE_EXTENSIONS = new Set([
@@ -101,7 +105,15 @@ const CODE_IGNORED_DIRS = new Set([
   "Pods",
   "__pycache__",
 ]);
-const RUN_COMPLETION_PR_GATE_STEP_KEYS = new Set(["implement", "test", "platform-smoke", "review"]);
+const RUN_COMPLETION_PR_GATE_STEP_KEYS = new Set(["implement", "test", "review"]);
+const RUN_FINALIZE_LOCK_TTL_MS = 15 * 60 * 1000;
+const PROJECT_MAINLINE_SYNC_LOCK_TTL_MS = 5 * 60 * 1000;
+const PROJECT_MERGE_QUEUE_LOCK_TTL_MS = 20 * 60 * 1000;
+const DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS = 2;
+const MAINLINE_REF_FETCH_STATE = new Map();
+const RUN_MODE_STANDARD = "standard";
+const RUN_MODE_QUICK = "quick";
+const RUN_MODE_QUICK_STEP_KEYS = new Set(["implement", "test", "cleanup"]);
 
 function countTextLines(text) {
   const source = String(text ?? "");
@@ -162,6 +174,32 @@ function createEmptyCodeTrend7d(warning = "", source = "none") {
   };
 }
 
+function createRecentUtcDateKeys(days = 7) {
+  const count = Math.max(1, Math.floor(Number(days) || 7));
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const out = [];
+  for (let index = count - 1; index >= 0; index -= 1) {
+    const stamp = todayUtc - (index * 24 * 60 * 60 * 1000);
+    out.push(new Date(stamp).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function normalizeRuntimeMetricName(value) {
+  const raw = String(value ?? "").trim();
+  return raw || "unknown";
+}
+
+function normalizeMetricDate(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const ts = Date.parse(raw);
+  if (!Number.isFinite(ts)) return "";
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
 function parseBoolLike(value, fallback = false) {
   if (typeof value === "boolean") return value;
   const text = String(value ?? "").trim().toLowerCase();
@@ -203,10 +241,40 @@ function toPositiveInt(value, fallback = 1) {
   return out >= 1 ? out : fallback;
 }
 
+function normalizeAutoMergeConflictMaxAttempts(value, fallback = DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const out = Math.floor(num);
+  if (out < 0) return fallback;
+  if (out > 8) return 8;
+  return out;
+}
+
 function isRunningIssueUniqueConstraintError(err) {
   const message = String(err?.message ?? err ?? "").toLowerCase();
   return message.includes("unique constraint failed: runs.project_id, runs.github_issue_id")
     || message.includes("idx_runs_project_issue_running");
+}
+
+function isUniqueConstraintError(err) {
+  const message = String(err?.message ?? err ?? "").toLowerCase();
+  return message.includes("unique constraint failed")
+    || message.includes("constraint unique");
+}
+
+function formatErrorMessage(err) {
+  return err instanceof Error ? err.message : String(err ?? "");
+}
+
+function isLikelyMergeConflictError(err) {
+  const message = formatErrorMessage(err).toLowerCase();
+  if (!message) return false;
+  return message.includes("conflict")
+    || message.includes("not mergeable")
+    || message.includes("merge failed")
+    || message.includes("cannot be merged")
+    || message.includes("merge conflict")
+    || message.includes("automatic merge failed");
 }
 
 function normalizeReviewAutoFixPolicy(rawPolicy) {
@@ -238,6 +306,65 @@ function buildStepPolicies(steps) {
     out[key] = policy;
   }
   return out;
+}
+
+function normalizeRunMode(value, fallback = RUN_MODE_STANDARD) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallback;
+  if (text === RUN_MODE_STANDARD || text === RUN_MODE_QUICK) {
+    return text;
+  }
+  return fallback;
+}
+
+function parseRunModeLike(value, fallback = RUN_MODE_STANDARD) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallback;
+  if (text === RUN_MODE_STANDARD || text === RUN_MODE_QUICK) {
+    return text;
+  }
+  throw new Error(`Invalid run mode: ${text}`);
+}
+
+function resolveRunWorkflowByMode(workflow, requestedRunMode) {
+  const mode = normalizeRunMode(requestedRunMode, RUN_MODE_STANDARD);
+  const fallback = {
+    workflow,
+    resolvedRunMode: mode,
+    quickApplied: false,
+    quickFallbackReason: "",
+  };
+  if (mode !== RUN_MODE_QUICK) {
+    return fallback;
+  }
+
+  const sourceSteps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+  const quickSteps = sourceSteps.filter((step) => RUN_MODE_QUICK_STEP_KEYS.has(String(step?.key ?? "").trim()));
+  if (quickSteps.length === 0) {
+    return {
+      ...fallback,
+      resolvedRunMode: RUN_MODE_STANDARD,
+      quickFallbackReason: "quick_steps_not_found",
+    };
+  }
+
+  const normalizedSteps = quickSteps.map((step, index) => ({
+    ...step,
+    dependsOn: index === 0 ? [] : [String(quickSteps[index - 1]?.key ?? "").trim()],
+  }));
+  const workflowId = String(workflow?.id ?? "").trim();
+  const workflowName = String(workflow?.name ?? "").trim();
+  return {
+    workflow: {
+      ...workflow,
+      id: workflowId ? `${workflowId}-quick` : "forgeops-quick-v1",
+      name: workflowName ? `${workflowName} (quick)` : "ForgeOps Quick Workflow",
+      steps: normalizedSteps,
+    },
+    resolvedRunMode: RUN_MODE_QUICK,
+    quickApplied: true,
+    quickFallbackReason: "",
+  };
 }
 
 function getStepPolicyFromContext(context, stepKey) {
@@ -273,6 +400,10 @@ function getWorkflowControlsFromContext(context) {
       rawControls.autoCloseIssueOnMerge ?? rawControls.auto_close_issue_on_merge,
       true
     ),
+    autoMergeConflictMaxAttempts: normalizeAutoMergeConflictMaxAttempts(
+      rawControls.autoMergeConflictMaxAttempts ?? rawControls.auto_merge_conflict_max_attempts,
+      DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS,
+    ),
   };
 }
 
@@ -289,6 +420,7 @@ const ISSUE_AUTOMATION_LABELS = {
   RUNNING: "forgeops:running",
   DONE: "forgeops:done",
   FAILED: "forgeops:failed",
+  PAUSED_LEGACY: "forgeops:paused",
 };
 const SKILL_CANDIDATE_ARTIFACT_KINDS = new Set([
   "skill-candidate",
@@ -305,13 +437,147 @@ const SKILL_PROMOTION_ROLE_IDS = new Set([
   "garbage-collector",
 ]);
 const CI_GATE_TEMPLATE_KEYS = new Set(["test"]);
-const PLATFORM_GATE_TEMPLATE_KEYS = new Set(["platform-smoke", "test"]);
+const PLATFORM_GATE_TEMPLATE_KEYS = new Set(["test"]);
+const CONTEXT_INDEX_RELATIVE_PATH = "docs/context/index.md";
+const CONTEXT_REGISTRY_START = "<!-- context-registry:start -->";
+const CONTEXT_REGISTRY_END = "<!-- context-registry:end -->";
+const CONTEXT_STEP_KEYS = new Set([
+  "architect",
+  "issue",
+  "implement",
+  "test",
+  "review",
+  "cleanup",
+]);
+const CONTEXT_PRIORITY_RANK = {
+  p0: 0,
+  p1: 1,
+  p2: 2,
+  p3: 3,
+};
+const STEP_SCOPED_CONTEXT_MAX_TOTAL_CHARS = 9000;
+const STEP_SCOPED_CONTEXT_PER_DOC_CHARS = 2800;
+const STEP_PROMPT_CONTEXT_MAX_CHARS = 16000;
 
 function clipText(value, maxChars = 240) {
   const text = String(value ?? "").trim().replace(/\s+/g, " ");
   if (!text) return "";
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(16, maxChars - 3))}...`;
+}
+
+function clipMultilineText(value, maxChars) {
+  const source = String(value ?? "").trim();
+  const limit = Number(maxChars);
+  if (!source) return "";
+  if (!Number.isFinite(limit) || limit <= 0 || source.length <= limit) {
+    return source;
+  }
+  return `${source.slice(0, Math.max(16, Math.floor(limit) - 15))}\n...[truncated]`;
+}
+
+function normalizeContextStepKey(value) {
+  const step = String(value ?? "").trim().toLowerCase();
+  if (!step) return "";
+  if (step === "platform-smoke") return "test";
+  return CONTEXT_STEP_KEYS.has(step) ? step : "";
+}
+
+function normalizeContextPriority(value) {
+  const priority = String(value ?? "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(CONTEXT_PRIORITY_RANK, priority) ? priority : "p3";
+}
+
+function extractContextRegistryJsonBlock(block) {
+  const source = String(block ?? "").trim();
+  if (!source) return "";
+
+  const fenced = source.match(/^```(?:json)?[^\r\n]*\r?\n([\s\S]*?)\r?\n```$/i);
+  if (fenced) {
+    return String(fenced[1] ?? "").trim();
+  }
+
+  const firstBracket = source.indexOf("[");
+  const lastBracket = source.lastIndexOf("]");
+  if (firstBracket !== -1 && lastBracket > firstBracket) {
+    return source.slice(firstBracket, lastBracket + 1).trim();
+  }
+
+  return "";
+}
+
+function parseContextRegistryEntries(indexText) {
+  const text = String(indexText ?? "");
+  if (!text) return [];
+
+  const start = text.indexOf(CONTEXT_REGISTRY_START);
+  const end = text.indexOf(CONTEXT_REGISTRY_END);
+  if (start === -1 || end === -1 || end <= start) return [];
+
+  const block = text.slice(start + CONTEXT_REGISTRY_START.length, end).trim();
+  const rawJson = extractContextRegistryJsonBlock(block);
+  if (!rawJson) return [];
+
+  let parsed = [];
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const docPath = String(item.path ?? "").trim().replace(/\\/g, "/");
+    if (!docPath.startsWith("docs/context/") || !docPath.endsWith(".md") || docPath === CONTEXT_INDEX_RELATIVE_PATH) {
+      continue;
+    }
+    const owner = String(item.owner ?? "").trim();
+    const priority = normalizeContextPriority(item.priority);
+    const steps = Array.isArray(item.use_for_steps)
+      ? item.use_for_steps
+        .map((step) => normalizeContextStepKey(step))
+        .filter(Boolean)
+      : [];
+    if (steps.length === 0) continue;
+    out.push({
+      path: docPath,
+      owner,
+      priority,
+      useForSteps: Array.from(new Set(steps)),
+    });
+  }
+
+  out.sort((left, right) => {
+    const leftRank = CONTEXT_PRIORITY_RANK[left.priority] ?? 99;
+    const rightRank = CONTEXT_PRIORITY_RANK[right.priority] ?? 99;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return left.path.localeCompare(right.path);
+  });
+  return out;
+}
+
+function signalProcess(pid, signal) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) {
+    return {
+      ok: false,
+      error: "invalid_pid",
+    };
+  }
+  try {
+    process.kill(numericPid, signal);
+    return {
+      ok: true,
+      error: "",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function normalizeGateStatusFromStepStatus(stepStatus) {
@@ -605,6 +871,204 @@ function buildSkillCandidateRecord(projectRootPath, absolutePath) {
   };
 }
 
+function parseTimeMs(rawValue) {
+  const ts = Number(new Date(String(rawValue ?? "")).getTime());
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function normalizeSkillNameCandidate(rawValue) {
+  const source = String(rawValue ?? "").trim();
+  if (!source) return "";
+  const cleaned = source
+    .replace(/^skill\s*candidate\s*[:：-]?\s*/i, "")
+    .replace(/^candidate\s*[:：-]?\s*/i, "")
+    .replace(/^候选技能\s*[:：-]?\s*/i, "")
+    .replace(/^技能候选\s*[:：-]?\s*/i, "")
+    .replace(/^skill-candidate\s*[:：-]?\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned;
+}
+
+function isGenericSkillCandidateTitle(rawTitle) {
+  const title = String(rawTitle ?? "").trim().toLowerCase();
+  if (!title) return true;
+  if (title === "skill candidate") return true;
+  if (/^skill candidate \d+$/.test(title)) return true;
+  if (/^candidate \d+$/.test(title)) return true;
+  if (/^候选技能\d*$/.test(title)) return true;
+  return false;
+}
+
+function deriveSkillNameFromCandidate(candidate) {
+  const normalizedTitle = normalizeSkillNameCandidate(candidate?.title);
+  if (normalizedTitle && !isGenericSkillCandidateTitle(normalizedTitle)) {
+    const fromTitle = slugify(normalizedTitle);
+    if (fromTitle) return fromTitle;
+  }
+
+  const content = String(candidate?.content ?? "");
+  const firstLine = content.split(/\r?\n/).find((line) => String(line ?? "").trim()) ?? "";
+  const fromFirstLine = slugify(
+    normalizeSkillNameCandidate(
+      String(firstLine ?? "")
+        .replace(/^[-*#\s]+/, "")
+        .replace(/^problem\s*[:：-]?\s*/i, "")
+        .replace(/^问题\s*[:：-]?\s*/i, "")
+        .trim()
+    )
+  );
+  if (fromFirstLine) return fromFirstLine;
+  return "";
+}
+
+function hasEvidenceSignal(candidate) {
+  const text = String(candidate?.content ?? "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("evidence")
+    || text.includes("proof")
+    || text.includes("证据")
+    || text.includes("验证")
+    || text.includes("测试")
+    || text.includes("test")
+    || text.includes("命令")
+    || text.includes("日志")
+  );
+}
+
+function hasProblemAndApproachSignal(candidate) {
+  const text = String(candidate?.content ?? "").toLowerCase();
+  if (!text) return false;
+  const hasProblem = text.includes("problem") || text.includes("问题");
+  const hasApproach = text.includes("approach") || text.includes("方案") || text.includes("做法");
+  return hasProblem && hasApproach;
+}
+
+function normalizeScore(value, fallback = 0.6) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n <= 0) return 0;
+  if (n >= 1) return 1;
+  return Number(n.toFixed(3));
+}
+
+function evaluateSkillCandidatesForAutoPromotion(candidates, options = {}) {
+  const rows = Array.isArray(candidates) ? candidates : [];
+  if (rows.length === 0) {
+    return {
+      totalCandidates: 0,
+      groupedSkills: 0,
+      eligible: [],
+      rejected: [],
+    };
+  }
+
+  const minOccurrences = Math.max(1, Number(options.minCandidateOccurrences ?? 2));
+  const lookbackDays = Math.max(1, Number(options.lookbackDays ?? 14));
+  const minScore = normalizeScore(options.minScore, 0.6);
+  const cutoffMs = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
+
+  const groupMap = new Map();
+  for (const candidate of rows) {
+    const generatedAtMs = parseTimeMs(candidate?.generatedAt);
+    if (generatedAtMs > 0 && generatedAtMs < cutoffMs) continue;
+    const skillName = deriveSkillNameFromCandidate(candidate);
+    if (!skillName) continue;
+    if (!groupMap.has(skillName)) {
+      groupMap.set(skillName, []);
+    }
+    groupMap.get(skillName).push({
+      ...candidate,
+      generatedAtMs,
+    });
+  }
+
+  const eligible = [];
+  const rejected = [];
+  for (const [skillName, grouped] of groupMap.entries()) {
+    grouped.sort((left, right) => {
+      const la = Number(left.generatedAtMs ?? 0);
+      const ra = Number(right.generatedAtMs ?? 0);
+      if (la !== ra) return ra - la;
+      return String(left.path ?? "").localeCompare(String(right.path ?? ""));
+    });
+    const latest = grouped[0];
+    const uniqueIssueSet = new Set(
+      grouped.map((item) => String(item.issueId ?? "").trim()).filter(Boolean)
+    );
+    const uniqueRunSet = new Set(
+      grouped.map((item) => String(item.runId ?? "").trim()).filter(Boolean)
+    );
+    const occurrenceCount = grouped.length;
+    const recurrenceScore = Math.min(1, occurrenceCount / minOccurrences);
+    const issueDiversityScore = uniqueIssueSet.size >= 2 ? 1 : (uniqueIssueSet.size === 1 ? 0.5 : 0);
+    const runDiversityScore = uniqueRunSet.size >= 2 ? 1 : (uniqueRunSet.size === 1 ? 0.5 : 0);
+    const evidenceScore = hasEvidenceSignal(latest) ? 1 : 0;
+    const structureScore = hasProblemAndApproachSignal(latest) ? 1 : 0.4;
+    const score = normalizeScore(
+      (recurrenceScore * 0.45)
+      + (evidenceScore * 0.25)
+      + (issueDiversityScore * 0.15)
+      + (runDiversityScore * 0.05)
+      + (structureScore * 0.10),
+      0
+    );
+
+    const summary = {
+      skillName,
+      candidatePath: String(latest.path ?? ""),
+      candidateTitle: String(latest.title ?? ""),
+      generatedAt: String(latest.generatedAt ?? ""),
+      occurrenceCount,
+      uniqueIssues: uniqueIssueSet.size,
+      uniqueRuns: uniqueRunSet.size,
+      score,
+    };
+
+    if (occurrenceCount < minOccurrences || score < minScore) {
+      rejected.push({
+        ...summary,
+        reason: occurrenceCount < minOccurrences ? "occurrences_below_threshold" : "score_below_threshold",
+      });
+      continue;
+    }
+
+    eligible.push({
+      ...summary,
+      candidate: latest,
+      description: `Auto promoted from ${occurrenceCount} candidates (score=${score})`,
+    });
+  }
+
+  eligible.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    const la = parseTimeMs(left.generatedAt);
+    const ra = parseTimeMs(right.generatedAt);
+    if (la !== ra) return ra - la;
+    return String(left.skillName).localeCompare(String(right.skillName));
+  });
+
+  rejected.sort((left, right) => {
+    const la = parseTimeMs(left.generatedAt);
+    const ra = parseTimeMs(right.generatedAt);
+    if (la !== ra) return ra - la;
+    return String(left.skillName).localeCompare(String(right.skillName));
+  });
+
+  return {
+    totalCandidates: rows.length,
+    groupedSkills: groupMap.size,
+    eligible,
+    rejected,
+    policy: {
+      minOccurrences,
+      lookbackDays,
+      minScore,
+    },
+  };
+}
+
 function buildPromotedSkillMarkdown(params) {
   const skillName = String(params?.skillName ?? "").trim();
   const description = String(params?.description ?? "").trim();
@@ -619,13 +1083,22 @@ function buildPromotedSkillMarkdown(params) {
     `description: "${yamlQuotedText(description)}"`,
     "---",
     "",
-    "# 执行准则",
+    "# Skill Intent",
     "",
-    "1. 本技能由项目实战候选晋升生成，使用前先核对当前任务边界。",
+    "本技能由项目实战候选自动晋升生成，合并前可由 Codex `skill-creator` 进一步收敛表达，但目标路径必须保持不变。",
+    "",
+    "# Usage Policy",
+    "",
+    "1. 使用前先核对当前任务边界与上下文约束。",
     "2. 优先复用已验证步骤，避免引入无法复现的隐式假设。",
     "3. 交付时必须附带可审计证据（命令、日志、产物路径）。",
+    "4. 若需重写本技能，优先使用 `skill-creator` 并保持标准 frontmatter（name/description）。",
     "",
-    "## 来源",
+    "## Canonical Location",
+    "",
+    `- .forgeops/skills/${skillName}/SKILL.md`,
+    "",
+    "## Source",
     "",
     `- candidate: ${String(candidate.path ?? "-") || "-"}`,
     `- run: ${String(candidate.runId ?? "-") || "-"}`,
@@ -656,6 +1129,11 @@ function buildSkillPromotionPullRequestBody(params) {
     `- source run: \`${String(candidate.runId ?? "-") || "-"}\``,
     `- source issue: ${issueRef ? `#${issueRef}` : "-"}`,
     `- target roles: ${roles.length > 0 ? roles.join(", ") : "-"}`,
+    "",
+    "## Authoring Contract",
+    "- [ ] keep canonical path: `.forgeops/skills/<skill-name>/SKILL.md`",
+    "- [ ] keep standard SKILL frontmatter: `name` + `description`",
+    "- [ ] if content needs refinement, use runtime system skill `skill-creator`",
     "",
     "## Changed Files",
     ...files.map((filePath) => `- \`${String(filePath)}\``),
@@ -692,13 +1170,22 @@ function buildGlobalPromotedSkillMarkdown(params) {
     `description: "${yamlQuotedText(description)}"`,
     "---",
     "",
-    "# 执行准则",
+    "# Skill Intent",
     "",
-    "1. 本技能来源于项目实战晋升，优先保证可执行与可复现。",
+    "本技能来源于项目实战晋升，合并前可由 Codex `skill-creator` 进一步整理，但目标路径必须保持不变。",
+    "",
+    "# Usage Policy",
+    "",
+    "1. 优先保证可执行与可复现。",
     "2. 如与项目本地技能冲突，以项目本地约束优先。",
     "3. 使用时必须输出命令、结果与证据路径。",
+    "4. 若需重写本技能，优先使用 `skill-creator` 并保持标准 frontmatter（name/description）。",
     "",
-    "## 来源",
+    "## Canonical Location",
+    "",
+    `- skills/${skillName}/SKILL.md`,
+    "",
+    "## Source",
     "",
     `- source_project_id: ${String(sourceProject.id ?? "-") || "-"}`,
     `- source_project_name: ${String(sourceProject.name ?? "-") || "-"}`,
@@ -735,6 +1222,11 @@ function buildGlobalSkillPromotionPullRequestBody(params) {
     `- source issue: ${String(candidate.issueId ?? "-") || "-"}`,
     `- target skill: \`${skillName || "-"}\``,
     "",
+    "## Authoring Contract",
+    "- [ ] keep canonical path: `skills/<skill-name>/SKILL.md` in user-global repo",
+    "- [ ] keep standard SKILL frontmatter: `name` + `description`",
+    "- [ ] if content needs refinement, use runtime system skill `skill-creator`",
+    "",
     "## Changed Files",
     ...files.map((filePath) => `- \`${String(filePath)}\``),
     "",
@@ -755,6 +1247,9 @@ function buildSkillPromotionReviewChecklistComment(params) {
   const sourceIssue = String(params?.sourceIssue ?? "").trim();
   const sourceProject = String(params?.sourceProject ?? "").trim();
   const targetRoles = Array.isArray(params?.targetRoles) ? params.targetRoles : [];
+  const canonicalPath = scope === "user-global"
+    ? `skills/${skillName || "<skill-name>"}/SKILL.md`
+    : `.forgeops/skills/${skillName || "<skill-name>"}/SKILL.md`;
 
   return [
     marker,
@@ -766,8 +1261,11 @@ function buildSkillPromotionReviewChecklistComment(params) {
     `- source issue: ${sourceIssue || "-"}`,
     sourceProject ? `- source project: \`${sourceProject}\`` : "- source project: -",
     `- target roles: ${targetRoles.length > 0 ? targetRoles.join(", ") : "-"}`,
+    `- canonical path: \`${canonicalPath}\``,
     "",
     "**Reviewer checks**",
+    "- [ ] 是否保持标准 SKILL frontmatter（name + description）",
+    "- [ ] 如需重写，是否基于运行时 `skill-creator` 完成",
     "- [ ] 方法是否可执行、可复现、可验证",
     "- [ ] 证据链是否可追溯（run/issue/artifacts）",
     "- [ ] 与现有技能是否冲突或重复",
@@ -775,6 +1273,21 @@ function buildSkillPromotionReviewChecklistComment(params) {
     "",
     "> 说明：分支前缀（如 `codex/`）仅表示自动化来源，不代表运行时或技能归属。",
   ].join("\n");
+}
+
+function buildSkillPromotionPrLabels(params) {
+  const scope = String(params?.scope ?? "project").trim();
+  const auto = params?.auto === true;
+  const labels = [
+    "forgeops:skill-promotion",
+    scope === "user-global" ? "forgeops:skill-global" : "forgeops:skill-project",
+    auto ? "forgeops:auto" : "forgeops:manual",
+  ];
+  return Array.from(new Set(
+    labels
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+  ));
 }
 
 function appendGlobalSkillAuditLog(worktreeRoot, payload) {
@@ -913,14 +1426,32 @@ function detectGitHubRepoFromOrigin(rootPath) {
   return parseGitHubRemoteSlug(originUrl);
 }
 
+function refreshMainlineRefsIfNeeded(repoRoot) {
+  const key = path.resolve(repoRoot);
+  const nowMs = Date.now();
+  const previous = MAINLINE_REF_FETCH_STATE.get(key);
+  const hasSuccess = Number(previous?.lastSuccessAtMs ?? 0) > 0;
+  const minIntervalMs = hasSuccess
+    ? MAINLINE_REF_FETCH_INTERVAL_MS
+    : MAINLINE_REF_FETCH_RETRY_INTERVAL_MS;
+  if (previous && nowMs - Number(previous.lastAttemptAtMs ?? 0) < minIntervalMs) {
+    return;
+  }
+  const refreshed = runCommandSafe("git", ["-C", repoRoot, "fetch", "--quiet", "--no-tags", "origin"]) !== null;
+  MAINLINE_REF_FETCH_STATE.set(key, {
+    lastAttemptAtMs: nowMs,
+    lastSuccessAtMs: refreshed ? nowMs : Number(previous?.lastSuccessAtMs ?? 0),
+  });
+}
+
 function detectMainlineRef(rootPath) {
   const repoRoot = String(rootPath ?? "").trim();
   if (!repoRoot) return "";
   const inRepo = runCommandSafe("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
   if (!inRepo) return "";
 
-  // Keep remote refs fresh so "mainline" reflects GitHub repo state.
-  runCommandSafe("git", ["-C", repoRoot, "fetch", "--quiet", "--no-tags", "origin"]);
+  // Keep remote refs reasonably fresh while avoiding frequent network fetches.
+  refreshMainlineRefsIfNeeded(repoRoot);
 
   const remoteHead = runCommandSafe("git", ["-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (remoteHead) {
@@ -1295,6 +1826,8 @@ export class ForgeOpsStore {
   constructor() {
     fs.mkdirSync(DB_DIR, { recursive: true });
     this.db = new DatabaseSync(DB_PATH);
+    this.lockOwnerBase = `forgeops:${process.pid}:${newId("lockowner")}`;
+    this.lockSequence = 0;
     this.events = new EventEmitter();
     this.projectLocCache = new Map();
     this.projectGitHubMetricsCache = new Map();
@@ -1410,6 +1943,14 @@ export class ForgeOpsStore {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS locks (
+        lock_key TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        meta_json TEXT NOT NULL DEFAULT '{}'
+      );
+
       CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_project_issue_running
         ON runs(project_id, github_issue_id)
@@ -1419,6 +1960,7 @@ export class ForgeOpsStore {
       CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, step_index);
       CREATE INDEX IF NOT EXISTS idx_steps_status ON steps(status);
       CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
+      CREATE INDEX IF NOT EXISTS idx_locks_expires_at ON locks(expires_at);
     `);
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_project_issue_running
@@ -1494,6 +2036,95 @@ export class ForgeOpsStore {
     }
   }
 
+  nextLockOwner(scope = "lock") {
+    const normalizedScope = String(scope ?? "lock").trim() || "lock";
+    this.lockSequence += 1;
+    return `${this.lockOwnerBase}:${normalizedScope}:${this.lockSequence}`;
+  }
+
+  tryAcquireLock(params) {
+    const lockKey = String(params?.lockKey ?? "").trim();
+    if (!lockKey) {
+      return {
+        acquired: false,
+        reason: "lock_key_missing",
+        lockKey: "",
+        owner: "",
+      };
+    }
+
+    const owner = String(params?.owner ?? this.nextLockOwner(params?.scope ?? "lock")).trim();
+    if (!owner) {
+      return {
+        acquired: false,
+        reason: "owner_missing",
+        lockKey,
+        owner: "",
+      };
+    }
+
+    const ttlRaw = Number(params?.ttlMs ?? 120_000);
+    const ttlMs = Number.isFinite(ttlRaw)
+      ? Math.max(1_000, Math.min(24 * 60 * 60 * 1000, Math.floor(ttlRaw)))
+      : 120_000;
+    const acquiredAt = nowIso();
+    const expiresAt = new Date(Date.parse(acquiredAt) + ttlMs).toISOString();
+    const meta = params?.meta && typeof params.meta === "object" ? params.meta : {};
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("DELETE FROM locks WHERE lock_key = ? AND expires_at <= ?")
+        .run(lockKey, acquiredAt);
+      try {
+        this.db
+          .prepare(
+            "INSERT INTO locks (lock_key, owner, acquired_at, expires_at, meta_json) VALUES (?, ?, ?, ?, ?)"
+          )
+          .run(lockKey, owner, acquiredAt, expiresAt, JSON.stringify(meta));
+      } catch (insertErr) {
+        if (!isUniqueConstraintError(insertErr)) {
+          throw insertErr;
+        }
+        const held = this.db
+          .prepare("SELECT lock_key, owner, acquired_at, expires_at FROM locks WHERE lock_key = ? LIMIT 1")
+          .get(lockKey);
+        this.db.exec("COMMIT");
+        return {
+          acquired: false,
+          reason: "locked",
+          lockKey,
+          owner,
+          heldBy: String(held?.owner ?? ""),
+          acquiredAt: String(held?.acquired_at ?? ""),
+          expiresAt: String(held?.expires_at ?? ""),
+        };
+      }
+      this.db.exec("COMMIT");
+      return {
+        acquired: true,
+        reason: "",
+        lockKey,
+        owner,
+        acquiredAt,
+        expiresAt,
+      };
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  releaseLock(params) {
+    const lockKey = String(params?.lockKey ?? "").trim();
+    const owner = String(params?.owner ?? "").trim();
+    if (!lockKey || !owner) return false;
+    const deleted = this.db
+      .prepare("DELETE FROM locks WHERE lock_key = ? AND owner = ?")
+      .run(lockKey, owner);
+    return Number(deleted?.changes ?? 0) > 0;
+  }
+
   getDbPath() {
     return DB_PATH;
   }
@@ -1524,6 +2155,63 @@ export class ForgeOpsStore {
     }
     const maxChars = 12000;
     return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[truncated]` : text;
+  }
+
+  loadStepScopedContextDocs(rootPath, stepKey) {
+    const step = normalizeContextStepKey(stepKey);
+    const projectRoot = String(rootPath ?? "").trim();
+    if (!step || !projectRoot) return "";
+
+    const indexPath = path.join(projectRoot, CONTEXT_INDEX_RELATIVE_PATH);
+    if (!fs.existsSync(indexPath) || !fs.statSync(indexPath).isFile()) {
+      return "";
+    }
+
+    const entries = parseContextRegistryEntries(fs.readFileSync(indexPath, "utf8"))
+      .filter((entry) => entry.useForSteps.includes(step));
+    if (entries.length === 0) return "";
+
+    let budget = STEP_SCOPED_CONTEXT_MAX_TOTAL_CHARS;
+    const chunks = [];
+    for (const entry of entries) {
+      if (budget <= 0) break;
+      const absPath = path.join(projectRoot, entry.path);
+      if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+        continue;
+      }
+      const raw = fs.readFileSync(absPath, "utf8");
+      const text = clipMultilineText(raw, STEP_SCOPED_CONTEXT_PER_DOC_CHARS);
+      if (!text) continue;
+
+      const title = `### ${entry.path} (owner=${entry.owner || "-"}, priority=${entry.priority})`;
+      const remainingForDoc = Math.max(0, budget - title.length - 4);
+      const body = clipMultilineText(text, remainingForDoc);
+      if (!body) continue;
+
+      chunks.push(`${title}\n${body}`);
+      budget -= (title.length + body.length + 2);
+    }
+
+    if (chunks.length === 0) return "";
+    return `Step-scoped context docs (selected from ${CONTEXT_INDEX_RELATIVE_PATH} for step=${step}):\n\n${chunks.join("\n\n")}`;
+  }
+
+  buildStepProjectContext(context, stepKey) {
+    const base = String(context?.projectContext ?? "").trim();
+    const step = normalizeContextStepKey(stepKey);
+    const stepContextRoot = String(
+      context?.project?.rootPath
+      || context?.project?.repoRootPath
+      || ""
+    ).trim();
+
+    const stepScopedDocs = step && stepContextRoot
+      ? this.loadStepScopedContextDocs(stepContextRoot, step)
+      : "";
+
+    const merged = [base, stepScopedDocs].filter(Boolean).join("\n\n");
+    if (!merged) return "";
+    return clipMultilineText(merged, STEP_PROMPT_CONTEXT_MAX_CHARS);
   }
 
   loadProjectGovernance(rootPath) {
@@ -1629,6 +2317,7 @@ export class ForgeOpsStore {
       projectId: project.id,
       title: params.title,
       body: params.description ?? "",
+      labels: Array.isArray(params.labels) ? params.labels : [],
     });
     return issue;
   }
@@ -1650,6 +2339,7 @@ export class ForgeOpsStore {
         projectId: params.projectId,
         issueId: issue.id,
         task: buildAutoIssueRunTask(issue),
+        runMode: parseRunModeLike(params.runMode, RUN_MODE_STANDARD),
       });
       return {
         issue,
@@ -1745,12 +2435,23 @@ export class ForgeOpsStore {
     ).trim();
     const draft = params?.draft !== false;
     const baseRef = String(params?.baseRef ?? "").trim();
+    const allowUpdateExistingPr = params?.allowUpdateExistingPr === true;
+    let existingPrForBranch = null;
+    try {
+      existingPrForBranch = findGitHubPullRequestForBranch({
+        repoRootPath: project.root_path,
+        branchName: requestedBranch,
+      });
+    } catch {
+      existingPrForBranch = null;
+    }
+    const effectiveBaseRef = baseRef || (existingPrForBranch?.number ? `origin/${requestedBranch}` : "");
 
     const worktree = createRunWorktree({
       rootPath: project.root_path,
       runId: promotionId,
       branchName: requestedBranch,
-      baseRef: baseRef || undefined,
+      baseRef: effectiveBaseRef || undefined,
     });
 
     try {
@@ -1829,9 +2530,33 @@ export class ForgeOpsStore {
           files: changedFiles,
         }),
         draft,
+        allowUpdateExistingPr,
       });
 
       if (Number(pullRequest?.number ?? 0) > 0) {
+        try {
+          const labelResult = updateGitHubPullRequestLabels({
+            repoRootPath: project.root_path,
+            prNumber: Number(pullRequest.number),
+            addLabels: buildSkillPromotionPrLabels({
+              scope: "project",
+              auto: params?.auto === true,
+            }),
+          });
+          this.emitEvent(null, null, "skills.promotion.pr.labels.synced", {
+            projectId: project.id,
+            skillName,
+            prNumber: Number(pullRequest.number),
+            labels: Array.isArray(labelResult?.labels) ? labelResult.labels : [],
+          });
+        } catch (err) {
+          this.emitEvent(null, null, "skills.promotion.pr.labels.failed", {
+            projectId: project.id,
+            skillName,
+            prNumber: Number(pullRequest.number),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         try {
           const prComment = createGitHubPullRequestComment({
             repoRootPath: project.root_path,
@@ -1863,6 +2588,18 @@ export class ForgeOpsStore {
         }
       }
 
+      this.emitEvent(null, null, "skills.promotion.created", {
+        projectId: project.id,
+        candidatePath: candidateRelativePath,
+        skillName,
+        branchName: worktree.worktreeBranch,
+        prNumber: Number(pullRequest?.number ?? 0) || 0,
+        prUrl: String(pullRequest?.url ?? ""),
+        draft,
+        auto: params?.auto === true,
+        updatedExisting: String(pullRequest?.skippedReason ?? "") === "updated_existing",
+      });
+
       return {
         projectId: project.id,
         promotionId,
@@ -1877,6 +2614,13 @@ export class ForgeOpsStore {
         },
         branchName: worktree.worktreeBranch,
         baseRef: worktree.baseRef,
+        existingPrForBranch: existingPrForBranch && existingPrForBranch.number
+          ? {
+              number: Number(existingPrForBranch.number),
+              state: String(existingPrForBranch.state ?? ""),
+              url: String(existingPrForBranch.url ?? ""),
+            }
+          : null,
         changedFiles,
         pullRequest,
       };
@@ -1944,6 +2688,17 @@ export class ForgeOpsStore {
     ).trim();
     const draft = params?.draft !== false;
     const baseRef = String(params?.baseRef ?? "").trim();
+    const allowUpdateExistingPr = params?.allowUpdateExistingPr === true;
+    let existingPrForBranch = null;
+    try {
+      existingPrForBranch = findGitHubPullRequestForBranch({
+        repoRootPath: globalRoot,
+        branchName: requestedBranch,
+      });
+    } catch {
+      existingPrForBranch = null;
+    }
+    const effectiveBaseRef = baseRef || (existingPrForBranch?.number ? `origin/${requestedBranch}` : "");
 
     let worktree;
     try {
@@ -1951,7 +2706,7 @@ export class ForgeOpsStore {
         rootPath: globalRoot,
         runId: promotionId,
         branchName: requestedBranch,
-        baseRef: baseRef || undefined,
+        baseRef: effectiveBaseRef || undefined,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2022,9 +2777,33 @@ export class ForgeOpsStore {
           files: changedFiles,
         }),
         draft,
+        allowUpdateExistingPr,
       });
 
       if (Number(pullRequest?.number ?? 0) > 0) {
+        try {
+          const labelResult = updateGitHubPullRequestLabels({
+            repoRootPath: globalRoot,
+            prNumber: Number(pullRequest.number),
+            addLabels: buildSkillPromotionPrLabels({
+              scope: "user-global",
+              auto: params?.auto === true,
+            }),
+          });
+          this.emitEvent(null, null, "skills.global.pr.labels.synced", {
+            projectId: project.id,
+            skillName,
+            prNumber: Number(pullRequest.number),
+            labels: Array.isArray(labelResult?.labels) ? labelResult.labels : [],
+          });
+        } catch (err) {
+          this.emitEvent(null, null, "skills.global.pr.labels.failed", {
+            projectId: project.id,
+            skillName,
+            prNumber: Number(pullRequest.number),
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         try {
           const prComment = createGitHubPullRequestComment({
             repoRootPath: globalRoot,
@@ -2064,6 +2843,8 @@ export class ForgeOpsStore {
         branchName: worktree.worktreeBranch,
         prNumber: Number(pullRequest?.number ?? 0) || 0,
         prUrl: String(pullRequest?.url ?? ""),
+        auto: params?.auto === true,
+        updatedExisting: String(pullRequest?.skippedReason ?? "") === "updated_existing",
       });
 
       return {
@@ -2080,6 +2861,13 @@ export class ForgeOpsStore {
         },
         branchName: worktree.worktreeBranch,
         baseRef: worktree.baseRef,
+        existingPrForBranch: existingPrForBranch && existingPrForBranch.number
+          ? {
+              number: Number(existingPrForBranch.number),
+              state: String(existingPrForBranch.state ?? ""),
+              url: String(existingPrForBranch.url ?? ""),
+            }
+          : null,
         changedFiles,
         pullRequest,
       };
@@ -2091,6 +2879,215 @@ export class ForgeOpsStore {
         branchName: worktree.worktreeBranch,
       });
     }
+  }
+
+  autoPromoteProjectSkillCandidates(params) {
+    const projectId = String(params?.projectId ?? "").trim();
+    const project = this.getProject(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+
+    const maxPromotionsPerTick = Math.max(1, Number(params?.maxPromotionsPerTick ?? 1));
+    const draft = params?.draft !== false;
+    const roles = normalizeSkillPromotionRoles(params?.roles);
+    const evaluation = evaluateSkillCandidatesForAutoPromotion(
+      this.listSkillCandidates(projectId),
+      {
+        minCandidateOccurrences: params?.minCandidateOccurrences,
+        lookbackDays: params?.lookbackDays,
+        minScore: params?.minScore,
+      }
+    );
+
+    const promoted = [];
+    const skipped = [];
+    const failed = [];
+    for (const item of evaluation.eligible) {
+      if (promoted.length >= maxPromotionsPerTick) {
+        skipped.push({
+          skillName: item.skillName,
+          candidatePath: item.candidatePath,
+          reason: "tick_limit_reached",
+        });
+        continue;
+      }
+      try {
+        const result = this.promoteSkillCandidate({
+          projectId,
+          candidate: item.candidatePath,
+          skillName: item.skillName,
+          description: item.description,
+          roles,
+          draft,
+          auto: true,
+          branchName: `forgeops/skill-auto/project/${item.skillName}`,
+          allowUpdateExistingPr: true,
+        });
+        const skippedReason = String(result?.pullRequest?.skippedReason ?? "");
+        if (skippedReason === "existing_open_no_new_commit") {
+          skipped.push({
+            skillName: item.skillName,
+            candidatePath: item.candidatePath,
+            reason: "existing_open_no_new_commit",
+            prNumber: Number(result?.pullRequest?.number ?? 0) || 0,
+            prUrl: String(result?.pullRequest?.url ?? ""),
+          });
+          continue;
+        }
+        promoted.push({
+          skillName: item.skillName,
+          candidatePath: item.candidatePath,
+          score: item.score,
+          occurrenceCount: item.occurrenceCount,
+          prNumber: Number(result?.pullRequest?.number ?? 0) || 0,
+          prUrl: String(result?.pullRequest?.url ?? ""),
+          updatedExisting: skippedReason === "updated_existing",
+        });
+      } catch (err) {
+        failed.push({
+          skillName: item.skillName,
+          candidatePath: item.candidatePath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    this.emitEvent(null, null, "skills.auto.project.summary", {
+      projectId,
+      totalCandidates: evaluation.totalCandidates,
+      groupedSkills: evaluation.groupedSkills,
+      eligibleCount: evaluation.eligible.length,
+      rejectedCount: evaluation.rejected.length,
+      promotedCount: promoted.length,
+      skippedCount: skipped.length,
+      failedCount: failed.length,
+      policy: evaluation.policy,
+    });
+
+    return {
+      projectId,
+      totalCandidates: evaluation.totalCandidates,
+      groupedSkills: evaluation.groupedSkills,
+      eligibleCount: evaluation.eligible.length,
+      rejected: evaluation.rejected,
+      promoted,
+      skipped,
+      failed,
+      policy: evaluation.policy,
+    };
+  }
+
+  autoPromoteGlobalSkillCandidates(params) {
+    const projectId = String(params?.projectId ?? "").trim();
+    const project = this.getProject(projectId);
+    if (!project) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+
+    const maxPromotionsPerTick = Math.max(1, Number(params?.maxPromotionsPerTick ?? 1));
+    const requireProjectSkill = params?.requireProjectSkill !== false;
+    const draft = params?.draft !== false;
+    const evaluation = evaluateSkillCandidatesForAutoPromotion(
+      this.listSkillCandidates(projectId),
+      {
+        minCandidateOccurrences: params?.minCandidateOccurrences,
+        lookbackDays: params?.lookbackDays,
+        minScore: params?.minScore,
+      }
+    );
+
+    const promoted = [];
+    const skipped = [];
+    const failed = [];
+
+    for (const item of evaluation.eligible) {
+      if (promoted.length >= maxPromotionsPerTick) {
+        skipped.push({
+          skillName: item.skillName,
+          candidatePath: item.candidatePath,
+          reason: "tick_limit_reached",
+        });
+        continue;
+      }
+
+      if (requireProjectSkill) {
+        const localSkillPath = path.join(project.root_path, ".forgeops", "skills", item.skillName, "SKILL.md");
+        if (!fs.existsSync(localSkillPath)) {
+          skipped.push({
+            skillName: item.skillName,
+            candidatePath: item.candidatePath,
+            reason: "project_skill_missing",
+          });
+          continue;
+        }
+      }
+
+      try {
+        const result = this.promoteSkillCandidateToUserGlobal({
+          projectId,
+          candidate: item.candidatePath,
+          skillName: item.skillName,
+          description: `Global auto promoted from ${item.occurrenceCount} candidates (score=${item.score})`,
+          draft,
+          auto: true,
+          branchName: `forgeops/skill-auto/global/${item.skillName}`,
+          allowUpdateExistingPr: true,
+        });
+        const skippedReason = String(result?.pullRequest?.skippedReason ?? "");
+        if (skippedReason === "existing_open_no_new_commit") {
+          skipped.push({
+            skillName: item.skillName,
+            candidatePath: item.candidatePath,
+            reason: "existing_open_no_new_commit",
+            prNumber: Number(result?.pullRequest?.number ?? 0) || 0,
+            prUrl: String(result?.pullRequest?.url ?? ""),
+          });
+          continue;
+        }
+        promoted.push({
+          skillName: item.skillName,
+          candidatePath: item.candidatePath,
+          score: item.score,
+          occurrenceCount: item.occurrenceCount,
+          prNumber: Number(result?.pullRequest?.number ?? 0) || 0,
+          prUrl: String(result?.pullRequest?.url ?? ""),
+          updatedExisting: skippedReason === "updated_existing",
+        });
+      } catch (err) {
+        failed.push({
+          skillName: item.skillName,
+          candidatePath: item.candidatePath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    this.emitEvent(null, null, "skills.auto.global.summary", {
+      projectId,
+      totalCandidates: evaluation.totalCandidates,
+      groupedSkills: evaluation.groupedSkills,
+      eligibleCount: evaluation.eligible.length,
+      rejectedCount: evaluation.rejected.length,
+      promotedCount: promoted.length,
+      skippedCount: skipped.length,
+      failedCount: failed.length,
+      requireProjectSkill,
+      policy: evaluation.policy,
+    });
+
+    return {
+      projectId,
+      totalCandidates: evaluation.totalCandidates,
+      groupedSkills: evaluation.groupedSkills,
+      eligibleCount: evaluation.eligible.length,
+      rejected: evaluation.rejected,
+      promoted,
+      skipped,
+      failed,
+      requireProjectSkill,
+      policy: evaluation.policy,
+    };
   }
 
   hasRunForGitHubIssue(projectId, issueRef) {
@@ -2135,6 +3132,7 @@ export class ForgeOpsStore {
         ISSUE_AUTOMATION_LABELS.RUNNING,
         ISSUE_AUTOMATION_LABELS.DONE,
         ISSUE_AUTOMATION_LABELS.FAILED,
+        ISSUE_AUTOMATION_LABELS.PAUSED_LEGACY,
       ];
     } else if (state === "running") {
       addLabels = [ISSUE_AUTOMATION_LABELS.RUNNING];
@@ -2143,6 +3141,16 @@ export class ForgeOpsStore {
         ISSUE_AUTOMATION_LABELS.QUEUED,
         ISSUE_AUTOMATION_LABELS.DONE,
         ISSUE_AUTOMATION_LABELS.FAILED,
+        ISSUE_AUTOMATION_LABELS.PAUSED_LEGACY,
+      ];
+    } else if (state === "paused") {
+      addLabels = [ISSUE_AUTOMATION_LABELS.QUEUED];
+      removeLabels = [
+        ISSUE_AUTOMATION_LABELS.READY,
+        ISSUE_AUTOMATION_LABELS.RUNNING,
+        ISSUE_AUTOMATION_LABELS.DONE,
+        ISSUE_AUTOMATION_LABELS.FAILED,
+        ISSUE_AUTOMATION_LABELS.PAUSED_LEGACY,
       ];
     } else if (state === "completed") {
       addLabels = [ISSUE_AUTOMATION_LABELS.DONE];
@@ -2150,6 +3158,7 @@ export class ForgeOpsStore {
         ISSUE_AUTOMATION_LABELS.QUEUED,
         ISSUE_AUTOMATION_LABELS.RUNNING,
         ISSUE_AUTOMATION_LABELS.FAILED,
+        ISSUE_AUTOMATION_LABELS.PAUSED_LEGACY,
       ];
     } else if (state === "failed") {
       addLabels = [ISSUE_AUTOMATION_LABELS.FAILED];
@@ -2157,6 +3166,7 @@ export class ForgeOpsStore {
         ISSUE_AUTOMATION_LABELS.QUEUED,
         ISSUE_AUTOMATION_LABELS.RUNNING,
         ISSUE_AUTOMATION_LABELS.DONE,
+        ISSUE_AUTOMATION_LABELS.PAUSED_LEGACY,
       ];
     } else {
       return;
@@ -2412,6 +3422,97 @@ export class ForgeOpsStore {
     };
   }
 
+  finalizeMergedPullRequest(params) {
+    const run = params?.run ?? this.getRun(params?.runId);
+    const project = params?.project ?? this.getProject(run?.project_id);
+    const stepId = params?.stepId ?? null;
+    const controls = params?.controls ?? getWorkflowControlsFromContext(
+      safeJsonParse(run?.context_json ?? "{}", {})
+    );
+    const pr = params?.pr ?? null;
+    const mergeMethod = String(params?.method ?? "squash");
+    const alreadyMerged = Boolean(params?.alreadyMerged);
+
+    if (!run?.id || !project || !pr?.number) {
+      return {
+        ok: false,
+        reason: "invalid_finalize_context",
+      };
+    }
+
+    this.emitEvent(run.id, stepId, "github.pr.automerge.completed", {
+      runId: run.id,
+      branch: run.worktree_branch,
+      prNumber: Number(pr.number),
+      prUrl: String(pr.url ?? ""),
+      method: mergeMethod,
+      alreadyMerged,
+      mergedAt: String(pr.mergedAt ?? ""),
+    });
+
+    if (!controls.autoCloseIssueOnMerge) {
+      this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
+        runId: run.id,
+        issueId: String(run.github_issue_id ?? ""),
+        prNumber: Number(pr.number),
+        prUrl: String(pr.url ?? ""),
+        reason: "disabled_by_workflow_config",
+      });
+      return { ok: true };
+    }
+
+    const issueId = String(run.github_issue_id ?? "").trim();
+    if (!issueId) {
+      this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
+        runId: run.id,
+        issueId: "",
+        prNumber: Number(pr.number),
+        prUrl: String(pr.url ?? ""),
+        reason: "no_issue_bound",
+      });
+      return { ok: true };
+    }
+
+    try {
+      const closed = closeGitHubIssue({
+        repoRootPath: project.root_path,
+        projectId: project.id,
+        issueRef: issueId,
+      });
+      if (closed.closed) {
+        this.emitEvent(run.id, stepId, "github.issue.autoclose.completed", {
+          runId: run.id,
+          issueId,
+          issueNumber: Number(closed.issueNumber ?? 0),
+          issueUrl: String(closed.issue?.github_url ?? ""),
+          alreadyClosed: Boolean(closed.alreadyClosed),
+          prNumber: Number(pr.number),
+          prUrl: String(pr.url ?? ""),
+        });
+      } else {
+        this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
+          runId: run.id,
+          issueId,
+          issueNumber: Number(closed.issueNumber ?? 0),
+          issueUrl: String(closed.issue?.github_url ?? ""),
+          reason: "issue_state_not_closed_after_update",
+          prNumber: Number(pr.number),
+          prUrl: String(pr.url ?? ""),
+        });
+      }
+    } catch (issueErr) {
+      this.emitEvent(run.id, stepId, "github.issue.autoclose.failed", {
+        runId: run.id,
+        issueId,
+        prNumber: Number(pr.number),
+        prUrl: String(pr.url ?? ""),
+        error: formatErrorMessage(issueErr),
+      });
+    }
+
+    return { ok: true };
+  }
+
   tryAutoMergeRunAfterCompletion(params) {
     const run = params?.run ?? this.getRun(params?.runId);
     if (!run?.id || !String(run.github_issue_id ?? "").trim()) {
@@ -2444,260 +3545,361 @@ export class ForgeOpsStore {
       };
     }
 
-    let pr = params?.pr?.number
-      ? params.pr
-      : this.findRunPullRequest({ run, project });
-    if (!pr?.number) {
-      this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
+    const mergeLockKey = `project:${project.id}:merge-queue`;
+    const mergeLockOwner = this.nextLockOwner(`project-merge:${project.id}`);
+    const mergeLock = this.tryAcquireLock({
+      lockKey: mergeLockKey,
+      owner: mergeLockOwner,
+      ttlMs: PROJECT_MERGE_QUEUE_LOCK_TTL_MS,
+      scope: "project_merge_queue",
+      meta: {
+        projectId: project.id,
+        runId: run.id,
+        stepId,
+      },
+    });
+    if (!mergeLock.acquired) {
+      this.emitEvent(run.id, stepId, "github.pr.automerge.deferred", {
         runId: run.id,
         branch: run.worktree_branch,
-        reason: "no_pr_for_branch",
+        reason: "merge_queue_busy",
+        lockKey: mergeLockKey,
       });
       return {
-        status: "skipped",
-        reason: "no_pr_for_branch",
+        status: "deferred",
+        reason: "merge_queue_busy",
       };
     }
-    if (Boolean(pr.isDraft)) {
-      try {
-        const ready = markGitHubPullRequestReadyForReview({
-          repoRootPath: project.root_path,
-          prNumber: Number(pr.number),
-        });
-        pr = ready?.pr ?? pr;
-        this.emitEvent(run.id, stepId, "github.pr.ready_for_review.completed", {
-          runId: run.id,
-          branch: run.worktree_branch,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          changed: Boolean(ready?.changed),
-          alreadyReady: Boolean(ready?.alreadyReady),
-        });
-      } catch (draftErr) {
-        this.emitEvent(run.id, stepId, "github.pr.ready_for_review.failed", {
-          runId: run.id,
-          branch: run.worktree_branch,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          error: draftErr instanceof Error ? draftErr.message : String(draftErr),
-        });
-      }
 
-      if (Boolean(pr.isDraft)) {
+    try {
+      let pr = params?.pr?.number
+        ? params.pr
+        : this.findRunPullRequest({ run, project });
+      if (!pr?.number) {
         this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
           runId: run.id,
           branch: run.worktree_branch,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          reason: "pr_is_draft",
+          reason: "no_pr_for_branch",
         });
         return {
           status: "skipped",
-          reason: "pr_is_draft",
-          pr,
+          reason: "no_pr_for_branch",
         };
       }
-    }
+      if (Boolean(pr.isDraft)) {
+        try {
+          const ready = markGitHubPullRequestReadyForReview({
+            repoRootPath: project.root_path,
+            prNumber: Number(pr.number),
+          });
+          pr = ready?.pr ?? pr;
+          this.emitEvent(run.id, stepId, "github.pr.ready_for_review.completed", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            changed: Boolean(ready?.changed),
+            alreadyReady: Boolean(ready?.alreadyReady),
+          });
+        } catch (draftErr) {
+          this.emitEvent(run.id, stepId, "github.pr.ready_for_review.failed", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            error: draftErr instanceof Error ? draftErr.message : String(draftErr),
+          });
+        }
 
-    if (controls.mergeMethod === "merge") {
-      const baseBranch = normalizeBaseBranchLike(pr.baseRefName ?? run.base_ref) || "main";
-      try {
-        const protection = getGitHubBranchProtection({
-          repoRootPath: project.root_path,
-          branchName: baseBranch,
-        });
-        if (!protection.available) {
-          this.emitEvent(run.id, stepId, "github.pr.automerge.warning", {
-            runId: run.id,
-            branch: run.worktree_branch,
-            prNumber: Number(pr.number),
-            prUrl: String(pr.url ?? ""),
-            reason: "branch_protection_query_failed",
-            mergeMethod: controls.mergeMethod,
-            baseBranch,
-            error: String(protection.error ?? ""),
-          });
-        } else if (protection.protected && protection.requiredLinearHistory) {
-          this.emitEvent(run.id, stepId, "github.pr.automerge.warning", {
-            runId: run.id,
-            branch: run.worktree_branch,
-            prNumber: Number(pr.number),
-            prUrl: String(pr.url ?? ""),
-            reason: "merge_method_conflicts_linear_history",
-            mergeMethod: controls.mergeMethod,
-            baseBranch,
-            requiredLinearHistory: true,
-          });
+        if (Boolean(pr.isDraft)) {
           this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
             runId: run.id,
             branch: run.worktree_branch,
             prNumber: Number(pr.number),
             prUrl: String(pr.url ?? ""),
-            reason: "merge_method_conflicts_linear_history",
-            mergeMethod: controls.mergeMethod,
-            baseBranch,
+            reason: "pr_is_draft",
           });
           return {
             status: "skipped",
-            reason: "merge_method_conflicts_linear_history",
+            reason: "pr_is_draft",
             pr,
           };
         }
-      } catch (err) {
-        this.emitEvent(run.id, stepId, "github.pr.automerge.warning", {
+      }
+
+      if (controls.mergeMethod === "merge") {
+        const baseBranch = normalizeBaseBranchLike(pr.baseRefName ?? run.base_ref) || "main";
+        try {
+          const protection = getGitHubBranchProtection({
+            repoRootPath: project.root_path,
+            branchName: baseBranch,
+          });
+          if (!protection.available) {
+            this.emitEvent(run.id, stepId, "github.pr.automerge.warning", {
+              runId: run.id,
+              branch: run.worktree_branch,
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+              reason: "branch_protection_query_failed",
+              mergeMethod: controls.mergeMethod,
+              baseBranch,
+              error: String(protection.error ?? ""),
+            });
+          } else if (protection.protected && protection.requiredLinearHistory) {
+            this.emitEvent(run.id, stepId, "github.pr.automerge.warning", {
+              runId: run.id,
+              branch: run.worktree_branch,
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+              reason: "merge_method_conflicts_linear_history",
+              mergeMethod: controls.mergeMethod,
+              baseBranch,
+              requiredLinearHistory: true,
+            });
+            this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
+              runId: run.id,
+              branch: run.worktree_branch,
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+              reason: "merge_method_conflicts_linear_history",
+              mergeMethod: controls.mergeMethod,
+              baseBranch,
+            });
+            return {
+              status: "skipped",
+              reason: "merge_method_conflicts_linear_history",
+              pr,
+            };
+          }
+        } catch (err) {
+          this.emitEvent(run.id, stepId, "github.pr.automerge.warning", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            reason: "branch_protection_query_error",
+            mergeMethod: controls.mergeMethod,
+            baseBranch,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      const gate = this.runAutoMergeFinalGate({
+        run,
+        project,
+      });
+      for (const check of gate.checks) {
+        const eventType = check.status === "failed"
+          ? "github.pr.automerge.gate.failed"
+          : check.status === "passed"
+            ? "github.pr.automerge.gate.passed"
+            : "github.pr.automerge.gate.skipped";
+        this.emitEvent(run.id, stepId, eventType, {
           runId: run.id,
-          branch: run.worktree_branch,
           prNumber: Number(pr.number),
           prUrl: String(pr.url ?? ""),
-          reason: "branch_protection_query_error",
-          mergeMethod: controls.mergeMethod,
-          baseBranch,
-          error: err instanceof Error ? err.message : String(err),
+          key: check.key,
+          reason: check.reason,
+          detail: check.detail,
         });
       }
-    }
-
-    const gate = this.runAutoMergeFinalGate({
-      run,
-      project,
-    });
-    for (const check of gate.checks) {
-      const eventType = check.status === "failed"
-        ? "github.pr.automerge.gate.failed"
-        : check.status === "passed"
-          ? "github.pr.automerge.gate.passed"
-          : "github.pr.automerge.gate.skipped";
-      this.emitEvent(run.id, stepId, eventType, {
-        runId: run.id,
-        prNumber: Number(pr.number),
-        prUrl: String(pr.url ?? ""),
-        key: check.key,
-        reason: check.reason,
-        detail: check.detail,
-      });
-    }
-    if (!gate.ok) {
-      this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
-        runId: run.id,
-        branch: run.worktree_branch,
-        prNumber: Number(pr.number),
-        prUrl: String(pr.url ?? ""),
-        reason: "final_gate_failed",
-        failedCheck: gate.failedCheck?.key ?? "",
-      });
-      return {
-        status: "skipped",
-        reason: "final_gate_failed",
-        pr,
-      };
-    }
-
-    try {
-      const merged = mergeGitHubPullRequest({
-        repoRootPath: project.root_path,
-        prNumber: Number(pr.number),
-        method: controls.mergeMethod,
-        deleteBranch: true,
-      });
-      if (!merged.merged) {
+      if (!gate.ok) {
         this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
           runId: run.id,
           branch: run.worktree_branch,
           prNumber: Number(pr.number),
           prUrl: String(pr.url ?? ""),
-          reason: "merge_not_completed",
-          state: String(merged.pr?.state ?? ""),
-          mergeStateStatus: String(merged.pr?.mergeStateStatus ?? ""),
+          reason: "final_gate_failed",
+          failedCheck: gate.failedCheck?.key ?? "",
         });
         return {
           status: "skipped",
-          reason: "merge_not_completed",
-          pr: merged.pr ?? pr,
+          reason: "final_gate_failed",
+          pr,
         };
       }
 
-      this.emitEvent(run.id, stepId, "github.pr.automerge.completed", {
-        runId: run.id,
-        branch: run.worktree_branch,
-        prNumber: Number(merged.pr?.number ?? pr.number),
-        prUrl: String(merged.pr?.url ?? pr.url ?? ""),
-        method: String(merged.method ?? "squash"),
-        alreadyMerged: Boolean(merged.alreadyMerged),
-        mergedAt: String(merged.pr?.mergedAt ?? ""),
-      });
-
-      if (!controls.autoCloseIssueOnMerge) {
-        this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
-          runId: run.id,
-          issueId: String(run.github_issue_id ?? ""),
-          prNumber: Number(merged.pr?.number ?? pr.number),
-          prUrl: String(merged.pr?.url ?? pr.url ?? ""),
-          reason: "disabled_by_workflow_config",
+      const tryMergeOnce = () => {
+        const merged = mergeGitHubPullRequest({
+          repoRootPath: project.root_path,
+          prNumber: Number(pr.number),
+          method: controls.mergeMethod,
+          deleteBranch: true,
         });
-      } else if (!String(run.github_issue_id ?? "").trim()) {
-        this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
-          runId: run.id,
-          issueId: "",
-          prNumber: Number(merged.pr?.number ?? pr.number),
-          prUrl: String(merged.pr?.url ?? pr.url ?? ""),
-          reason: "no_issue_bound",
-        });
-      } else {
-        try {
-          const closed = closeGitHubIssue({
-            repoRootPath: project.root_path,
-            projectId: project.id,
-            issueRef: run.github_issue_id,
-          });
-          if (closed.closed) {
-            this.emitEvent(run.id, stepId, "github.issue.autoclose.completed", {
-              runId: run.id,
-              issueId: String(run.github_issue_id ?? ""),
-              issueNumber: Number(closed.issueNumber ?? 0),
-              issueUrl: String(closed.issue?.github_url ?? ""),
-              alreadyClosed: Boolean(closed.alreadyClosed),
-              prNumber: Number(merged.pr?.number ?? pr.number),
-              prUrl: String(merged.pr?.url ?? pr.url ?? ""),
-            });
-          } else {
-            this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
-              runId: run.id,
-              issueId: String(run.github_issue_id ?? ""),
-              issueNumber: Number(closed.issueNumber ?? 0),
-              issueUrl: String(closed.issue?.github_url ?? ""),
-              reason: "issue_state_not_closed_after_update",
-              prNumber: Number(merged.pr?.number ?? pr.number),
-              prUrl: String(merged.pr?.url ?? pr.url ?? ""),
-            });
-          }
-        } catch (issueErr) {
-          this.emitEvent(run.id, stepId, "github.issue.autoclose.failed", {
+        if (!merged.merged) {
+          this.emitEvent(run.id, stepId, "github.pr.automerge.skipped", {
             runId: run.id,
-            issueId: String(run.github_issue_id ?? ""),
-            prNumber: Number(merged.pr?.number ?? pr.number),
-            prUrl: String(merged.pr?.url ?? pr.url ?? ""),
-            error: issueErr instanceof Error ? issueErr.message : String(issueErr),
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            reason: "merge_not_completed",
+            state: String(merged.pr?.state ?? ""),
+            mergeStateStatus: String(merged.pr?.mergeStateStatus ?? ""),
           });
+          return {
+            status: "skipped",
+            reason: "merge_not_completed",
+            pr: merged.pr ?? pr,
+          };
         }
-      }
 
-      return {
-        status: "completed",
-        pr: merged.pr ?? pr,
+        const mergedPr = merged.pr ?? pr;
+        this.finalizeMergedPullRequest({
+          run,
+          project,
+          stepId,
+          controls,
+          pr: mergedPr,
+          method: String(merged.method ?? controls.mergeMethod ?? "squash"),
+          alreadyMerged: Boolean(merged.alreadyMerged),
+        });
+        return {
+          status: "completed",
+          pr: mergedPr,
+        };
       };
-    } catch (err) {
-      this.emitEvent(run.id, stepId, "github.pr.automerge.failed", {
-        runId: run.id,
-        branch: run.worktree_branch,
-        prNumber: Number(pr.number),
-        prUrl: String(pr.url ?? ""),
-        error: err instanceof Error ? err.message : String(err),
+
+      try {
+        return tryMergeOnce();
+      } catch (err) {
+        if (!isLikelyMergeConflictError(err)) {
+          this.emitEvent(run.id, stepId, "github.pr.automerge.failed", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            error: formatErrorMessage(err),
+          });
+          return {
+            status: "failed",
+            reason: formatErrorMessage(err),
+            pr,
+          };
+        }
+
+        const maxConflictAttempts = normalizeAutoMergeConflictMaxAttempts(
+          controls.autoMergeConflictMaxAttempts,
+          DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS,
+        );
+        if (maxConflictAttempts <= 0) {
+          const disabledReason = "merge_conflict_auto_fix_disabled";
+          this.emitEvent(run.id, stepId, "github.pr.automerge.failed", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            error: disabledReason,
+          });
+          this.emitEvent(run.id, stepId, "run.merge.blocked_manual", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            reason: disabledReason,
+          });
+          return {
+            status: "failed",
+            reason: disabledReason,
+            pr,
+          };
+        }
+
+        for (let attempt = 1; attempt <= maxConflictAttempts; attempt += 1) {
+          this.emitEvent(run.id, stepId, "github.pr.automerge.conflict.retry_started", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            attempt,
+            maxAttempts: maxConflictAttempts,
+            error: formatErrorMessage(err),
+          });
+
+          const resolved = autoResolvePullRequestMergeConflict({
+            repoRootPath: project.root_path,
+            worktreePath: run.worktree_path,
+            branchName: run.worktree_branch,
+            baseRef: run.base_ref,
+            runId: run.id,
+            prNumber: Number(pr.number),
+          });
+          if (!resolved.resolved) {
+            this.emitEvent(run.id, stepId, "github.pr.automerge.conflict.retry_failed", {
+              runId: run.id,
+              branch: run.worktree_branch,
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+              attempt,
+              maxAttempts: maxConflictAttempts,
+              reason: String(resolved.reason ?? "unknown"),
+              detail: String(resolved.detail ?? ""),
+              conflictFiles: Array.isArray(resolved.conflictFiles) ? resolved.conflictFiles : [],
+            });
+            if (resolved.reason === "codex_not_found") {
+              break;
+            }
+            continue;
+          }
+
+          this.emitEvent(run.id, stepId, "github.pr.automerge.conflict.retry_resolved", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            attempt,
+            maxAttempts: maxConflictAttempts,
+            headSha: String(resolved.headSha ?? ""),
+          });
+
+          try {
+            return tryMergeOnce();
+          } catch (retryErr) {
+            this.emitEvent(run.id, stepId, "github.pr.automerge.conflict.retry_merge_failed", {
+              runId: run.id,
+              branch: run.worktree_branch,
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+              attempt,
+              maxAttempts: maxConflictAttempts,
+              error: formatErrorMessage(retryErr),
+            });
+            if (!isLikelyMergeConflictError(retryErr)) {
+              return {
+                status: "failed",
+                reason: formatErrorMessage(retryErr),
+                pr,
+              };
+            }
+          }
+        }
+
+        const exhaustedReason = `merge_conflict_unresolved_after_${maxConflictAttempts}_attempts`;
+        this.emitEvent(run.id, stepId, "github.pr.automerge.failed", {
+          runId: run.id,
+          branch: run.worktree_branch,
+          prNumber: Number(pr.number),
+          prUrl: String(pr.url ?? ""),
+          error: exhaustedReason,
+        });
+        this.emitEvent(run.id, stepId, "run.merge.blocked_manual", {
+          runId: run.id,
+          branch: run.worktree_branch,
+          prNumber: Number(pr.number),
+          prUrl: String(pr.url ?? ""),
+          reason: exhaustedReason,
+        });
+        return {
+          status: "failed",
+          reason: exhaustedReason,
+          pr,
+        };
+      }
+    } finally {
+      this.releaseLock({
+        lockKey: mergeLockKey,
+        owner: mergeLockOwner,
       });
-      return {
-        status: "failed",
-        reason: err instanceof Error ? err.message : String(err),
-        pr,
-      };
     }
   }
 
@@ -2705,76 +3907,120 @@ export class ForgeOpsStore {
     const run = params?.run ?? this.getRun(params?.runId);
     if (!run?.id || !run?.worktree_branch) return null;
     if (!String(run.github_issue_id ?? "").trim()) return null;
-    const context = params?.context && typeof params.context === "object"
-      ? params.context
-      : safeJsonParse(run.context_json, {});
-    const controls = getWorkflowControlsFromContext(context);
-    const mainlineSynced = this.hasRunEvent(run.id, "github.mainline.sync.completed");
-    const worktreeArchived = this.hasRunEvent(run.id, "github.worktree.archive.completed");
-    const issueAutoClosed = this.hasRunEvent(run.id, "github.issue.autoclose.completed");
-    if (mainlineSynced && worktreeArchived && (issueAutoClosed || !controls.autoCloseIssueOnMerge)) {
-      return {
-        status: "already_completed",
-      };
-    }
-
     const stepId = params?.stepId ?? null;
     const emitDeferred = params?.emitDeferred === true;
     const emitSkipped = params?.emitSkipped === true;
     const emitFailure = params?.emitFailure === true;
-
     const project = params?.project ?? this.getProject(run.project_id);
     if (!project) return null;
-
-    const pr = params?.pr ?? this.findRunPullRequest({
-      run,
-      project,
+    const finalizeLockKey = `run:${run.id}:finalize`;
+    const finalizeLockOwner = this.nextLockOwner(`run-finalize:${run.id}`);
+    const finalizeLock = this.tryAcquireLock({
+      lockKey: finalizeLockKey,
+      owner: finalizeLockOwner,
+      ttlMs: RUN_FINALIZE_LOCK_TTL_MS,
+      scope: "run_finalize",
+      meta: {
+        projectId: project.id,
+        runId: run.id,
+        stepId,
+      },
     });
-    if (!pr?.number) {
+    if (!finalizeLock.acquired) {
       if (emitDeferred) {
         this.emitEvent(run.id, stepId, "github.mainline.sync.deferred", {
           runId: run.id,
           branch: run.worktree_branch,
-          reason: "no_pr_for_branch",
+          reason: "finalize_locked",
+          lockKey: finalizeLockKey,
         });
       }
       return {
         status: "deferred",
-        reason: "no_pr_for_branch",
+        reason: "finalize_locked",
       };
     }
 
-    const prState = String(pr.state ?? "").trim().toUpperCase();
-    const mergedAt = String(pr.mergedAt ?? "").trim();
-    const merged = Boolean(mergedAt) || prState === "MERGED";
-    if (!merged) {
-      if (emitDeferred) {
-        this.emitEvent(run.id, stepId, "github.mainline.sync.deferred", {
-          runId: run.id,
-          branch: run.worktree_branch,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          prState: prState || "UNKNOWN",
-          reason: "pr_not_merged",
-        });
-      }
-      return {
-        status: "deferred",
-        reason: "pr_not_merged",
-      };
-    }
-
-    let mainlineStatus = mainlineSynced ? "already_synced" : "pending";
-    let mainlineChanged = false;
     try {
-      if (!mainlineSynced) {
-        const synced = syncDefaultBranchFromRemote({
-          rootPath: project.root_path,
-          baseRef: run.base_ref,
-        });
-        if (!synced.synced) {
-          if (emitSkipped) {
-            this.emitEvent(run.id, stepId, "github.mainline.sync.skipped", {
+      const context = params?.context && typeof params.context === "object"
+        ? params.context
+        : safeJsonParse(run.context_json, {});
+      const controls = getWorkflowControlsFromContext(context);
+      const mainlineSynced = this.hasRunEvent(run.id, "github.mainline.sync.completed");
+      const worktreeArchived = this.hasRunEvent(run.id, "github.worktree.archive.completed");
+      const issueAutoClosed = this.hasRunEvent(run.id, "github.issue.autoclose.completed");
+      if (mainlineSynced && worktreeArchived && (issueAutoClosed || !controls.autoCloseIssueOnMerge)) {
+        return {
+          status: "already_completed",
+        };
+      }
+
+      const pr = params?.pr ?? this.findRunPullRequest({
+        run,
+        project,
+      });
+      if (!pr?.number) {
+        if (emitDeferred) {
+          this.emitEvent(run.id, stepId, "github.mainline.sync.deferred", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            reason: "no_pr_for_branch",
+          });
+        }
+        return {
+          status: "deferred",
+          reason: "no_pr_for_branch",
+        };
+      }
+
+      const prState = String(pr.state ?? "").trim().toUpperCase();
+      const mergedAt = String(pr.mergedAt ?? "").trim();
+      const merged = Boolean(mergedAt) || prState === "MERGED";
+      if (!merged) {
+        if (emitDeferred) {
+          this.emitEvent(run.id, stepId, "github.mainline.sync.deferred", {
+            runId: run.id,
+            branch: run.worktree_branch,
+            prNumber: Number(pr.number),
+            prUrl: String(pr.url ?? ""),
+            prState: prState || "UNKNOWN",
+            reason: "pr_not_merged",
+          });
+        }
+        return {
+          status: "deferred",
+          reason: "pr_not_merged",
+        };
+      }
+
+      let mainlineStatus = mainlineSynced ? "already_synced" : "pending";
+      let mainlineChanged = false;
+      try {
+        if (!mainlineSynced) {
+          const synced = syncDefaultBranchFromRemote({
+            rootPath: project.root_path,
+            baseRef: run.base_ref,
+            autoStashDirty: true,
+          });
+          if (!synced.synced) {
+            if (emitSkipped) {
+              this.emitEvent(run.id, stepId, "github.mainline.sync.skipped", {
+                runId: run.id,
+                branch: run.worktree_branch,
+                prNumber: Number(pr.number),
+                prUrl: String(pr.url ?? ""),
+                mergedAt: mergedAt || null,
+                baseRef: synced.baseRef || String(run.base_ref ?? ""),
+                baseBranch: synced.baseBranch || "",
+                reason: String(synced.skippedReason ?? "unknown"),
+                stashedWorkspace: Boolean(synced.stashedWorkspace),
+                stashRestored: Boolean(synced.stashRestored),
+              });
+            }
+            mainlineStatus = "skipped";
+          } else {
+            mainlineChanged = Boolean(synced.changed);
+            this.emitEvent(run.id, stepId, "github.mainline.sync.completed", {
               runId: run.id,
               branch: run.worktree_branch,
               prNumber: Number(pr.number),
@@ -2782,174 +4028,168 @@ export class ForgeOpsStore {
               mergedAt: mergedAt || null,
               baseRef: synced.baseRef || String(run.base_ref ?? ""),
               baseBranch: synced.baseBranch || "",
-              reason: String(synced.skippedReason ?? "unknown"),
+              changed: Boolean(synced.changed),
+              stashedWorkspace: Boolean(synced.stashedWorkspace),
+              stashRestored: Boolean(synced.stashRestored),
             });
+            mainlineStatus = "completed";
           }
-          mainlineStatus = "skipped";
-        } else {
-          mainlineChanged = Boolean(synced.changed);
-          this.emitEvent(run.id, stepId, "github.mainline.sync.completed", {
+        }
+      } catch (err) {
+        if (emitFailure) {
+          this.emitEvent(run.id, stepId, "github.mainline.sync.failed", {
             runId: run.id,
             branch: run.worktree_branch,
             prNumber: Number(pr.number),
             prUrl: String(pr.url ?? ""),
             mergedAt: mergedAt || null,
-            baseRef: synced.baseRef || String(run.base_ref ?? ""),
-            baseBranch: synced.baseBranch || "",
-            changed: Boolean(synced.changed),
+            error: err instanceof Error ? err.message : String(err),
           });
-          mainlineStatus = "completed";
         }
+        mainlineStatus = "failed";
       }
-    } catch (err) {
-      if (emitFailure) {
-        this.emitEvent(run.id, stepId, "github.mainline.sync.failed", {
-          runId: run.id,
-          branch: run.worktree_branch,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          mergedAt: mergedAt || null,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      mainlineStatus = "failed";
-    }
 
-    let archiveStatus = worktreeArchived ? "already_archived" : "pending";
-    try {
-      if (!worktreeArchived) {
-        const archived = cleanupRunWorktree({
-          rootPath: project.root_path,
-          runId: run.id,
-          worktreePath: run.worktree_path,
-          branchName: run.worktree_branch,
-        });
-        if (!archived.cleaned) {
-          if (emitSkipped) {
-            this.emitEvent(run.id, stepId, "github.worktree.archive.skipped", {
+      let archiveStatus = worktreeArchived ? "already_archived" : "pending";
+      try {
+        if (!worktreeArchived) {
+          const archived = cleanupRunWorktree({
+            rootPath: project.root_path,
+            runId: run.id,
+            worktreePath: run.worktree_path,
+            branchName: run.worktree_branch,
+          });
+          if (!archived.cleaned) {
+            if (emitSkipped) {
+              this.emitEvent(run.id, stepId, "github.worktree.archive.skipped", {
+                runId: run.id,
+                branch: run.worktree_branch,
+                prNumber: Number(pr.number),
+                prUrl: String(pr.url ?? ""),
+                mergedAt: mergedAt || null,
+                worktreePath: archived.worktreePath || String(run.worktree_path ?? ""),
+                reason: String(archived.skippedReason ?? "unknown"),
+              });
+            }
+            archiveStatus = "skipped";
+          } else {
+            this.emitEvent(run.id, stepId, "github.worktree.archive.completed", {
               runId: run.id,
               branch: run.worktree_branch,
               prNumber: Number(pr.number),
               prUrl: String(pr.url ?? ""),
               mergedAt: mergedAt || null,
               worktreePath: archived.worktreePath || String(run.worktree_path ?? ""),
-              reason: String(archived.skippedReason ?? "unknown"),
+              localBranchDeleted: Boolean(archived.localBranchDeleted),
             });
+            archiveStatus = "completed";
           }
-          archiveStatus = "skipped";
-        } else {
-          this.emitEvent(run.id, stepId, "github.worktree.archive.completed", {
+        }
+      } catch (err) {
+        if (emitFailure) {
+          this.emitEvent(run.id, stepId, "github.worktree.archive.failed", {
             runId: run.id,
             branch: run.worktree_branch,
             prNumber: Number(pr.number),
             prUrl: String(pr.url ?? ""),
             mergedAt: mergedAt || null,
-            worktreePath: archived.worktreePath || String(run.worktree_path ?? ""),
-            localBranchDeleted: Boolean(archived.localBranchDeleted),
+            worktreePath: String(run.worktree_path ?? ""),
+            error: err instanceof Error ? err.message : String(err),
           });
-          archiveStatus = "completed";
         }
+        archiveStatus = "failed";
       }
-    } catch (err) {
-      if (emitFailure) {
-        this.emitEvent(run.id, stepId, "github.worktree.archive.failed", {
-          runId: run.id,
-          branch: run.worktree_branch,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          mergedAt: mergedAt || null,
-          worktreePath: String(run.worktree_path ?? ""),
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      archiveStatus = "failed";
-    }
 
-    let issueCloseStatus = issueAutoClosed ? "already_closed" : "pending";
-    const issueId = String(run.github_issue_id ?? "").trim();
-    if (!issueId) {
-      issueCloseStatus = "skipped";
-    } else if (!controls.autoCloseIssueOnMerge) {
-      issueCloseStatus = "skipped";
-      if (emitSkipped && !this.hasRunEvent(run.id, "github.issue.autoclose.skipped")) {
-        this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
-          runId: run.id,
-          issueId,
-          prNumber: Number(pr.number),
-          prUrl: String(pr.url ?? ""),
-          reason: "disabled_by_workflow_config",
-        });
-      }
-    } else if (!issueAutoClosed) {
-      try {
-        const closed = closeGitHubIssue({
-          repoRootPath: project.root_path,
-          projectId: project.id,
-          issueRef: issueId,
-        });
-        if (closed.closed) {
-          this.emitEvent(run.id, stepId, "github.issue.autoclose.completed", {
-            runId: run.id,
-            issueId,
-            issueNumber: Number(closed.issueNumber ?? 0),
-            issueUrl: String(closed.issue?.github_url ?? ""),
-            alreadyClosed: Boolean(closed.alreadyClosed),
-            prNumber: Number(pr.number),
-            prUrl: String(pr.url ?? ""),
-          });
-          issueCloseStatus = "completed";
-        } else {
+      let issueCloseStatus = issueAutoClosed ? "already_closed" : "pending";
+      const issueId = String(run.github_issue_id ?? "").trim();
+      if (!issueId) {
+        issueCloseStatus = "skipped";
+      } else if (!controls.autoCloseIssueOnMerge) {
+        issueCloseStatus = "skipped";
+        if (emitSkipped && !this.hasRunEvent(run.id, "github.issue.autoclose.skipped")) {
           this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
             runId: run.id,
             issueId,
-            issueNumber: Number(closed.issueNumber ?? 0),
-            issueUrl: String(closed.issue?.github_url ?? ""),
-            reason: "issue_state_not_closed_after_update",
             prNumber: Number(pr.number),
             prUrl: String(pr.url ?? ""),
-          });
-          issueCloseStatus = "skipped";
-        }
-      } catch (issueErr) {
-        if (emitFailure) {
-          this.emitEvent(run.id, stepId, "github.issue.autoclose.failed", {
-            runId: run.id,
-            issueId,
-            prNumber: Number(pr.number),
-            prUrl: String(pr.url ?? ""),
-            error: issueErr instanceof Error ? issueErr.message : String(issueErr),
+            reason: "disabled_by_workflow_config",
           });
         }
-        issueCloseStatus = "failed";
+      } else if (!issueAutoClosed) {
+        try {
+          const closed = closeGitHubIssue({
+            repoRootPath: project.root_path,
+            projectId: project.id,
+            issueRef: issueId,
+          });
+          if (closed.closed) {
+            this.emitEvent(run.id, stepId, "github.issue.autoclose.completed", {
+              runId: run.id,
+              issueId,
+              issueNumber: Number(closed.issueNumber ?? 0),
+              issueUrl: String(closed.issue?.github_url ?? ""),
+              alreadyClosed: Boolean(closed.alreadyClosed),
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+            });
+            issueCloseStatus = "completed";
+          } else {
+            this.emitEvent(run.id, stepId, "github.issue.autoclose.skipped", {
+              runId: run.id,
+              issueId,
+              issueNumber: Number(closed.issueNumber ?? 0),
+              issueUrl: String(closed.issue?.github_url ?? ""),
+              reason: "issue_state_not_closed_after_update",
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+            });
+            issueCloseStatus = "skipped";
+          }
+        } catch (issueErr) {
+          if (emitFailure) {
+            this.emitEvent(run.id, stepId, "github.issue.autoclose.failed", {
+              runId: run.id,
+              issueId,
+              prNumber: Number(pr.number),
+              prUrl: String(pr.url ?? ""),
+              error: issueErr instanceof Error ? issueErr.message : String(issueErr),
+            });
+          }
+          issueCloseStatus = "failed";
+        }
       }
-    }
 
-    const completed = (mainlineStatus === "completed" || mainlineStatus === "already_synced")
-      && (archiveStatus === "completed" || archiveStatus === "already_archived")
-      && (
-        issueCloseStatus === "completed"
-        || issueCloseStatus === "already_closed"
-        || issueCloseStatus === "skipped"
-      );
-    if (completed) {
+      const completed = (mainlineStatus === "completed" || mainlineStatus === "already_synced")
+        && (archiveStatus === "completed" || archiveStatus === "already_archived")
+        && (
+          issueCloseStatus === "completed"
+          || issueCloseStatus === "already_closed"
+          || issueCloseStatus === "skipped"
+        );
+      if (completed) {
+        return {
+          status: "completed",
+          changed: mainlineChanged,
+        };
+      }
+      if (mainlineStatus === "failed" || archiveStatus === "failed" || issueCloseStatus === "failed") {
+        return {
+          status: "failed",
+        };
+      }
+      if (mainlineStatus === "skipped" || archiveStatus === "skipped") {
+        return {
+          status: "skipped",
+        };
+      }
       return {
-        status: "completed",
-        changed: mainlineChanged,
+        status: "deferred",
       };
+    } finally {
+      this.releaseLock({
+        lockKey: finalizeLockKey,
+        owner: finalizeLockOwner,
+      });
     }
-    if (mainlineStatus === "failed" || archiveStatus === "failed" || issueCloseStatus === "failed") {
-      return {
-        status: "failed",
-      };
-    }
-    if (mainlineStatus === "skipped" || archiveStatus === "skipped") {
-      return {
-        status: "skipped",
-      };
-    }
-    return {
-      status: "deferred",
-    };
   }
 
   syncProjectMainlineAfterMergedPr(params) {
@@ -2958,42 +4198,89 @@ export class ForgeOpsStore {
     const project = this.getProject(projectId);
     if (!project) return 0;
 
-    const limitRaw = Number(params?.limit ?? 8);
-    const limit = Number.isFinite(limitRaw)
-      ? Math.max(1, Math.min(50, Math.floor(limitRaw)))
-      : 8;
-    const runs = this.db
-      .prepare(
-        `SELECT *
-         FROM runs
-         WHERE project_id = ?
-           AND status = 'completed'
-           AND COALESCE(TRIM(github_issue_id), '') != ''
-           AND COALESCE(TRIM(worktree_branch), '') != ''
-         ORDER BY updated_at DESC
-         LIMIT ?`
-      )
-      .all(projectId, limit);
-
-    let syncedCount = 0;
-    for (const run of runs) {
-      const alreadyMainline = this.hasRunEvent(run.id, "github.mainline.sync.completed");
-      const alreadyArchived = this.hasRunEvent(run.id, "github.worktree.archive.completed");
-      if (alreadyMainline && alreadyArchived) {
-        continue;
-      }
-      const result = this.syncRunMainlineAfterPrMerge({
-        run,
-        project,
-        emitDeferred: false,
-        emitSkipped: false,
-        emitFailure: false,
+    const lockKey = `project:${project.id}:mainline-sync`;
+    const lockOwner = this.nextLockOwner(`project-mainline:${project.id}`);
+    const syncLock = this.tryAcquireLock({
+      lockKey,
+      owner: lockOwner,
+      ttlMs: PROJECT_MAINLINE_SYNC_LOCK_TTL_MS,
+      scope: "project_mainline_sync",
+      meta: {
+        projectId: project.id,
+      },
+    });
+    if (!syncLock.acquired) {
+      this.emitEvent(null, null, "scheduler.mainline_sync.skipped_locked", {
+        projectId: project.id,
+        projectName: project.name,
+        lockKey,
       });
-      if (result?.status === "completed") {
-        syncedCount += 1;
-      }
+      return 0;
     }
-    return syncedCount;
+
+    try {
+      const limitRaw = Number(params?.limit ?? 8);
+      const limit = Number.isFinite(limitRaw)
+        ? Math.max(1, Math.min(50, Math.floor(limitRaw)))
+        : 8;
+      const runs = this.db
+        .prepare(
+          `SELECT *
+           FROM runs
+           WHERE project_id = ?
+             AND status = 'completed'
+             AND COALESCE(TRIM(github_issue_id), '') != ''
+             AND COALESCE(TRIM(worktree_branch), '') != ''
+           ORDER BY updated_at DESC
+           LIMIT ?`
+        )
+        .all(projectId, limit);
+
+      let syncedCount = 0;
+      for (const run of runs) {
+        const context = safeJsonParse(run.context_json, {});
+        const controls = getWorkflowControlsFromContext(context);
+        const alreadyMainline = this.hasRunEvent(run.id, "github.mainline.sync.completed");
+        const alreadyArchived = this.hasRunEvent(run.id, "github.worktree.archive.completed");
+        const issueAutoClosed = this.hasRunEvent(run.id, "github.issue.autoclose.completed");
+        if (alreadyMainline && alreadyArchived && (issueAutoClosed || !controls.autoCloseIssueOnMerge)) {
+          continue;
+        }
+
+        let mergePr = null;
+        const alreadyAutoMerged = this.hasRunEvent(run.id, "github.pr.automerge.completed");
+        if (!alreadyAutoMerged && controls.autoMerge) {
+          const autoMerge = this.tryAutoMergeRunAfterCompletion({
+            run,
+            project,
+            context,
+            stepId: null,
+          });
+          if (autoMerge?.pr?.number) {
+            mergePr = autoMerge.pr;
+          }
+        }
+
+        const result = this.syncRunMainlineAfterPrMerge({
+          run,
+          project,
+          context,
+          pr: mergePr,
+          emitDeferred: false,
+          emitSkipped: false,
+          emitFailure: false,
+        });
+        if (result?.status === "completed") {
+          syncedCount += 1;
+        }
+      }
+      return syncedCount;
+    } finally {
+      this.releaseLock({
+        lockKey,
+        owner: lockOwner,
+      });
+    }
   }
 
   buildGitHubRunProgressCommentBody(params) {
@@ -3364,6 +4651,190 @@ export class ForgeOpsStore {
     };
   }
 
+  getGlobalTokenUsageMetrics(options = {}) {
+    const trendDays = Math.max(1, Math.min(30, Math.floor(Number(options.trendDays ?? 7) || 7)));
+    const dayKeys = createRecentUtcDateKeys(trendDays);
+    const rangeStart = dayKeys[0];
+    const rangeEnd = dayKeys[dayKeys.length - 1];
+
+    const runtimeRows = this.db.prepare(
+      `SELECT
+         COALESCE(NULLIF(TRIM(runtime), ''), 'unknown') AS runtime,
+         COALESCE(SUM(token_input), 0) AS token_input_total,
+         COALESCE(SUM(token_cached_input), 0) AS token_cached_input_total,
+         COALESCE(SUM(token_output), 0) AS token_output_total
+       FROM steps
+       GROUP BY runtime
+       ORDER BY (token_input_total + token_cached_input_total + token_output_total) DESC, runtime ASC`
+    ).all();
+
+    const runtimeTotals = [];
+    let tokenInputTotal = 0;
+    let tokenCachedInputTotal = 0;
+    let tokenOutputTotal = 0;
+
+    for (const row of runtimeRows) {
+      const runtime = normalizeRuntimeMetricName(row.runtime);
+      const tokenInput = Number(row.token_input_total ?? 0);
+      const tokenCachedInput = Number(row.token_cached_input_total ?? 0);
+      const tokenOutput = Number(row.token_output_total ?? 0);
+      const runtimeTotal = tokenInput + tokenCachedInput + tokenOutput;
+      if (runtimeTotal <= 0) continue;
+      tokenInputTotal += tokenInput;
+      tokenCachedInputTotal += tokenCachedInput;
+      tokenOutputTotal += tokenOutput;
+      runtimeTotals.push({
+        runtime,
+        token_input_total: tokenInput,
+        token_cached_input_total: tokenCachedInput,
+        token_output_total: tokenOutput,
+        total_tokens: runtimeTotal,
+      });
+    }
+
+    const tokenTotal = tokenInputTotal + tokenCachedInputTotal + tokenOutputTotal;
+    const tokenPromptTotal = tokenInputTotal + tokenCachedInputTotal;
+    const tokenCacheHitRate = tokenPromptTotal > 0
+      ? (tokenCachedInputTotal / tokenPromptTotal) * 100
+      : 0;
+
+    const runtimeTotalsWithRates = runtimeTotals.map((row) => {
+      const runtimePromptTotal = row.token_input_total + row.token_cached_input_total;
+      return {
+        ...row,
+        token_cache_hit_rate: runtimePromptTotal > 0
+          ? (row.token_cached_input_total / runtimePromptTotal) * 100
+          : 0,
+        share_rate: tokenTotal > 0 ? (row.total_tokens / tokenTotal) * 100 : 0,
+      };
+    });
+
+    const projectRows = this.db.prepare(
+      `SELECT
+         p.id AS project_id,
+         p.name AS project_name,
+         COALESCE(SUM(s.token_input), 0) AS token_input_total,
+         COALESCE(SUM(s.token_cached_input), 0) AS token_cached_input_total,
+         COALESCE(SUM(s.token_output), 0) AS token_output_total
+       FROM steps s
+       JOIN runs r ON r.id = s.run_id
+       JOIN projects p ON p.id = r.project_id
+       GROUP BY p.id, p.name
+       ORDER BY (token_input_total + token_cached_input_total + token_output_total) DESC, p.name ASC`
+    ).all();
+    const projectTotalsWithRates = [];
+    for (const row of projectRows) {
+      const tokenInput = Number(row.token_input_total ?? 0);
+      const tokenCachedInput = Number(row.token_cached_input_total ?? 0);
+      const tokenOutput = Number(row.token_output_total ?? 0);
+      const projectTotal = tokenInput + tokenCachedInput + tokenOutput;
+      if (projectTotal <= 0) continue;
+      const promptTotal = tokenInput + tokenCachedInput;
+      projectTotalsWithRates.push({
+        project_id: String(row.project_id ?? ""),
+        project_name: String(row.project_name ?? ""),
+        token_input_total: tokenInput,
+        token_cached_input_total: tokenCachedInput,
+        token_output_total: tokenOutput,
+        total_tokens: projectTotal,
+        token_cache_hit_rate: promptTotal > 0 ? (tokenCachedInput / promptTotal) * 100 : 0,
+        share_rate: tokenTotal > 0 ? (projectTotal / tokenTotal) * 100 : 0,
+      });
+    }
+
+    const runtimeOrder = new Map();
+    runtimeTotalsWithRates.forEach((row, index) => {
+      runtimeOrder.set(row.runtime, index);
+    });
+
+    const trendDateExpr = "substr(COALESCE(NULLIF(TRIM(ended_at), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), '')), 1, 10)";
+    const trendRows = this.db.prepare(
+      `SELECT
+         COALESCE(NULLIF(TRIM(runtime), ''), 'unknown') AS runtime,
+         ${trendDateExpr} AS date_key,
+         COALESCE(SUM(token_input), 0) AS token_input_total,
+         COALESCE(SUM(token_cached_input), 0) AS token_cached_input_total,
+         COALESCE(SUM(token_output), 0) AS token_output_total
+       FROM steps
+       WHERE ${trendDateExpr} BETWEEN ? AND ?
+       GROUP BY date_key, runtime
+       ORDER BY date_key ASC, runtime ASC`
+    ).all(rangeStart, rangeEnd);
+
+    const trendDayMap = new Map(
+      dayKeys.map((date) => [
+        date,
+        {
+          date,
+          totalTokens: 0,
+          runtimeMap: new Map(),
+        },
+      ]),
+    );
+
+    for (const row of trendRows) {
+      const dateKey = normalizeMetricDate(row.date_key);
+      if (!trendDayMap.has(dateKey)) continue;
+      const runtime = normalizeRuntimeMetricName(row.runtime);
+      const tokenInput = Number(row.token_input_total ?? 0);
+      const tokenCachedInput = Number(row.token_cached_input_total ?? 0);
+      const tokenOutput = Number(row.token_output_total ?? 0);
+      const runtimeTotal = tokenInput + tokenCachedInput + tokenOutput;
+      if (runtimeTotal <= 0) continue;
+      const bucket = trendDayMap.get(dateKey);
+      if (!bucket) continue;
+      bucket.totalTokens += runtimeTotal;
+      const existing = bucket.runtimeMap.get(runtime) ?? {
+        runtime,
+        token_input_total: 0,
+        token_cached_input_total: 0,
+        token_output_total: 0,
+        total_tokens: 0,
+      };
+      existing.token_input_total += tokenInput;
+      existing.token_cached_input_total += tokenCachedInput;
+      existing.token_output_total += tokenOutput;
+      existing.total_tokens += runtimeTotal;
+      bucket.runtimeMap.set(runtime, existing);
+    }
+
+    const trendDaysRows = dayKeys.map((date) => {
+      const bucket = trendDayMap.get(date);
+      const runtimeTotalsForDay = bucket
+        ? Array.from(bucket.runtimeMap.values()).sort((a, b) => {
+          const rankA = runtimeOrder.has(a.runtime) ? Number(runtimeOrder.get(a.runtime)) : Number.MAX_SAFE_INTEGER;
+          const rankB = runtimeOrder.has(b.runtime) ? Number(runtimeOrder.get(b.runtime)) : Number.MAX_SAFE_INTEGER;
+          if (rankA !== rankB) return rankA - rankB;
+          return String(a.runtime).localeCompare(String(b.runtime));
+        })
+        : [];
+      return {
+        date,
+        total_tokens: Number(bucket?.totalTokens ?? 0),
+        runtime_totals: runtimeTotalsForDay,
+      };
+    });
+
+    const trendAvailable = trendDaysRows.some((row) => Number(row.total_tokens ?? 0) > 0);
+
+    return {
+      total_tokens: tokenTotal,
+      token_input_total: tokenInputTotal,
+      token_cached_input_total: tokenCachedInputTotal,
+      token_output_total: tokenOutputTotal,
+      token_cache_hit_rate: tokenCacheHitRate,
+      project_totals: projectTotalsWithRates,
+      runtime_totals: runtimeTotalsWithRates,
+      trend_7d: {
+        available: trendAvailable,
+        source: "steps",
+        days: trendDaysRows,
+        warning: trendAvailable ? "" : `最近 ${trendDays} 天暂无 Token 消耗记录。`,
+      },
+      collected_at: nowIso(),
+    };
+  }
+
   createRun(params) {
     const project = this.getProject(params.projectId);
     if (!project) {
@@ -3432,14 +4903,19 @@ export class ForgeOpsStore {
         autoMerge: true,
         mergeMethod: "squash",
         autoCloseIssueOnMerge: true,
+        autoMergeConflictMaxAttempts: DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS,
       },
       stepPolicies: {},
       stepOutputs: {},
     };
 
-    const workflow = params.workflowOverride && typeof params.workflowOverride === "object"
+    const requestedRunMode = parseRunModeLike(params.runMode, RUN_MODE_STANDARD);
+    const baseWorkflow = params.workflowOverride && typeof params.workflowOverride === "object"
       ? params.workflowOverride
       : resolveWorkflow(project.root_path);
+    const workflowResolution = resolveRunWorkflowByMode(baseWorkflow, requestedRunMode);
+    const workflow = workflowResolution.workflow;
+    const resolvedRunMode = workflowResolution.resolvedRunMode;
     const steps = workflow.steps;
     if (!Array.isArray(steps) || steps.length === 0) {
       throw new Error("Invalid workflow config: no steps defined");
@@ -3459,9 +4935,18 @@ export class ForgeOpsStore {
             ?? workflow.workflowControls.auto_close_issue_on_merge,
           true
         ),
+        autoMergeConflictMaxAttempts: normalizeAutoMergeConflictMaxAttempts(
+          workflow.workflowControls.autoMergeConflictMaxAttempts
+            ?? workflow.workflowControls.auto_merge_conflict_max_attempts,
+          DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS,
+        ),
       };
     }
     context.stepPolicies = buildStepPolicies(steps);
+    context.runMode = resolvedRunMode;
+    context.runModeRequested = requestedRunMode;
+    context.quickModeApplied = workflowResolution.quickApplied;
+    context.quickModeFallbackReason = workflowResolution.quickFallbackReason;
     const workflowId = String(workflow.id ?? "").trim() || "forgeops-custom-v1";
 
     this.db.exec("BEGIN");
@@ -3543,6 +5028,8 @@ export class ForgeOpsStore {
       projectId: params.projectId,
       issueId: issue.id,
       task,
+      runMode: resolvedRunMode,
+      runModeRequested: requestedRunMode,
       worktreePath: worktree.worktreePath,
       worktreeBranch: worktree.worktreeBranch,
       baseRef: worktree.baseRef,
@@ -3766,28 +5253,29 @@ export class ForgeOpsStore {
       .prepare("SELECT * FROM sessions WHERE id = ? LIMIT 1")
       .get(sessionId);
     if (!current) return;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch ?? {}, key);
 
     const next = {
-      process_pid: patch.processPid ?? current.process_pid,
-      thread_id: patch.threadId ?? current.thread_id,
-      turn_id: patch.turnId ?? current.turn_id,
-      effective_model: patch.effectiveModel ?? current.effective_model,
-      model_provider: patch.modelProvider ?? current.model_provider,
-      token_input: Number.isFinite(Number(patch.tokenInput))
+      process_pid: has("processPid") ? patch.processPid : current.process_pid,
+      thread_id: has("threadId") ? patch.threadId : current.thread_id,
+      turn_id: has("turnId") ? patch.turnId : current.turn_id,
+      effective_model: has("effectiveModel") ? patch.effectiveModel : current.effective_model,
+      model_provider: has("modelProvider") ? patch.modelProvider : current.model_provider,
+      token_input: has("tokenInput") && Number.isFinite(Number(patch.tokenInput))
         ? Number(patch.tokenInput)
         : Number(current.token_input ?? 0),
-      token_cached_input: Number.isFinite(Number(patch.tokenCachedInput))
+      token_cached_input: has("tokenCachedInput") && Number.isFinite(Number(patch.tokenCachedInput))
         ? Number(patch.tokenCachedInput)
         : Number(current.token_cached_input ?? 0),
-      token_output: Number.isFinite(Number(patch.tokenOutput))
+      token_output: has("tokenOutput") && Number.isFinite(Number(patch.tokenOutput))
         ? Number(patch.tokenOutput)
         : Number(current.token_output ?? 0),
-      token_reasoning_output: Number.isFinite(Number(patch.tokenReasoningOutput))
+      token_reasoning_output: has("tokenReasoningOutput") && Number.isFinite(Number(patch.tokenReasoningOutput))
         ? Number(patch.tokenReasoningOutput)
         : Number(current.token_reasoning_output ?? 0),
-      status: patch.status ?? current.status,
-      error: patch.error ?? current.error,
-      ended_at: patch.endedAt ?? current.ended_at,
+      status: has("status") ? patch.status : current.status,
+      error: has("error") ? patch.error : current.error,
+      ended_at: has("endedAt") ? patch.endedAt : current.ended_at,
     };
 
     this.db.prepare(
@@ -3923,7 +5411,6 @@ export class ForgeOpsStore {
       && (
         step.step_key === "implement"
         || step.step_key === "test"
-        || step.step_key === "platform-smoke"
         || step.step_key === "review"
       )
     ) {
@@ -4258,13 +5745,142 @@ export class ForgeOpsStore {
 
   resumeRun(runId) {
     const run = this.getRun(runId);
+    if (!run) return false;
+    if (run.status === "failed") {
+      return this.resumeFailedRun(run);
+    }
+    if (run.status === "paused") {
+      return this.resumePausedRun(run);
+    }
+    return false;
+  }
+
+  stopRuns(params = {}) {
+    const projectId = String(params?.projectId ?? "").trim();
+    const rows = projectId
+      ? this.db
+          .prepare(
+            "SELECT id FROM runs WHERE status = 'running' AND project_id = ? ORDER BY created_at ASC"
+          )
+          .all(projectId)
+      : this.db
+          .prepare("SELECT id FROM runs WHERE status = 'running' ORDER BY created_at ASC")
+          .all();
+
+    let changed = 0;
+    const failed = [];
+    for (const row of rows) {
+      const runId = String(row?.id ?? "").trim();
+      if (!runId) continue;
+      if (this.stopRun(runId)) {
+        changed += 1;
+      } else {
+        failed.push(runId);
+      }
+    }
+    return {
+      total: rows.length,
+      changed,
+      failed,
+      projectId: projectId || null,
+    };
+  }
+
+  resumePausedRuns(params = {}) {
+    const projectId = String(params?.projectId ?? "").trim();
+    const rows = projectId
+      ? this.db
+          .prepare(
+            "SELECT id FROM runs WHERE status = 'paused' AND project_id = ? ORDER BY created_at ASC"
+          )
+          .all(projectId)
+      : this.db
+          .prepare("SELECT id FROM runs WHERE status = 'paused' ORDER BY created_at ASC")
+          .all();
+
+    let changed = 0;
+    const failed = [];
+    for (const row of rows) {
+      const runId = String(row?.id ?? "").trim();
+      if (!runId) continue;
+      if (this.resumeRun(runId)) {
+        changed += 1;
+      } else {
+        failed.push(runId);
+      }
+    }
+    return {
+      total: rows.length,
+      changed,
+      failed,
+      projectId: projectId || null,
+    };
+  }
+
+  stopRun(runId) {
+    const run = this.getRun(runId);
+    if (!run || run.status !== "running") return false;
+
+    const now = nowIso();
+    const runningSteps = this.db
+      .prepare(
+        `SELECT s.id, s.step_key, s.runtime_session_id, se.id AS session_id, se.process_pid
+         FROM steps s
+         LEFT JOIN sessions se ON se.id = s.runtime_session_id
+         WHERE s.run_id = ?
+           AND s.status = 'running'
+         ORDER BY s.step_index ASC`
+      )
+      .all(run.id);
+
+    let signaledCount = 0;
+    for (const row of runningSteps) {
+      const result = signalProcess(row.process_pid, "SIGSTOP");
+      if (result.ok) {
+        signaledCount += 1;
+      }
+      if (row.session_id) {
+        this.updateSession(row.session_id, {
+          status: "paused",
+          error: result.ok ? "Manually paused by operator" : `Pause signal failed: ${result.error}`,
+        });
+      }
+      this.emitEvent(run.id, row.id, "run.stop.signal", {
+        runId: run.id,
+        stepId: row.id,
+        stepKey: row.step_key,
+        processPid: row.process_pid ?? null,
+        signal: "SIGSTOP",
+        ok: result.ok,
+        error: result.error,
+      });
+    }
+
+    this.db.prepare("UPDATE runs SET status = 'paused', updated_at = ? WHERE id = ?").run(now, run.id);
+    this.emitEvent(run.id, null, "run.paused", {
+      runId: run.id,
+      runningStepCount: runningSteps.length,
+      signaledCount,
+    });
+    if (run.github_issue_id) {
+      this.syncGitHubIssueAutomationStamp({
+        projectId: run.project_id,
+        runId: run.id,
+        issueId: run.github_issue_id,
+        state: "paused",
+      });
+    }
+    return true;
+  }
+
+  resumeFailedRun(run) {
     if (!run || run.status !== "failed") return false;
 
     const failedStep = this.db
       .prepare(
         "SELECT * FROM steps WHERE run_id = ? AND status = 'failed' ORDER BY step_index ASC LIMIT 1"
       )
-      .get(runId);
+      .get(run.id);
 
     if (!failedStep) return false;
     const now = nowIso();
@@ -4281,20 +5897,111 @@ export class ForgeOpsStore {
       },
     );
 
-    this.db.prepare("UPDATE runs SET status = 'running', updated_at = ? WHERE id = ?").run(now, runId);
+    this.db.prepare("UPDATE runs SET status = 'running', updated_at = ? WHERE id = ?").run(now, run.id);
     this.db.prepare("UPDATE steps SET status = 'pending', error = NULL, input_text = ?, updated_at = ? WHERE id = ?").run(nextInput, now, failedStep.id);
 
-    this.emitEvent(runId, failedStep.id, "run.resumed", {
-      runId,
+    this.emitEvent(run.id, failedStep.id, "run.resumed", {
+      runId: run.id,
       stepId: failedStep.id,
       stepKey: failedStep.step_key,
+      mode: "failed_retry",
     });
     if (run.github_issue_id) {
       this.syncGitHubIssueAutomationStamp({
         projectId: run.project_id,
-        runId,
+        runId: run.id,
         issueId: run.github_issue_id,
         state: "queued",
+      });
+    }
+    return true;
+  }
+
+  resumePausedRun(run) {
+    if (!run || run.status !== "paused") return false;
+    const now = nowIso();
+    const runningSteps = this.db
+      .prepare(
+        `SELECT s.id, s.step_key, s.runtime_session_id, se.id AS session_id, se.process_pid
+         FROM steps s
+         LEFT JOIN sessions se ON se.id = s.runtime_session_id
+         WHERE s.run_id = ?
+           AND s.status = 'running'
+         ORDER BY s.step_index ASC`
+      )
+      .all(run.id);
+
+    let continuedCount = 0;
+    for (const row of runningSteps) {
+      const result = signalProcess(row.process_pid, "SIGCONT");
+      if (result.ok) {
+        continuedCount += 1;
+      }
+      this.emitEvent(run.id, row.id, "run.resume.signal", {
+        runId: run.id,
+        stepId: row.id,
+        stepKey: row.step_key,
+        processPid: row.process_pid ?? null,
+        signal: "SIGCONT",
+        ok: result.ok,
+        error: result.error,
+      });
+    }
+
+    if (continuedCount === 0 && runningSteps.length > 0) {
+      for (const row of runningSteps) {
+        const step = this.db.prepare("SELECT * FROM steps WHERE id = ? LIMIT 1").get(row.id);
+        if (!step) continue;
+        const context = safeJsonParse(run.context_json, {});
+        const stepPolicy = getStepPolicyFromContext(context, step.step_key);
+        const nextInput = this.renderStepInput(
+          step.step_key,
+          context,
+          step.template_key ?? step.step_key,
+          {
+            attempt: Number(step.retry_count ?? 0) + 1,
+            maxAttempts: Number(step.max_retries ?? 0) + 1,
+            stepPolicy,
+          },
+        );
+        this.db.prepare(
+          "UPDATE steps SET status = 'pending', started_at = NULL, input_text = ?, updated_at = ? WHERE id = ?"
+        ).run(nextInput, now, row.id);
+        if (row.session_id) {
+          this.updateSession(row.session_id, {
+            status: "failed",
+            error: "Pause-resume fallback: process missing, switching to thread resume",
+            endedAt: now,
+          });
+        }
+      }
+      this.emitEvent(run.id, null, "run.resume.fallback", {
+        runId: run.id,
+        reason: "no_live_process",
+      });
+    } else {
+      for (const row of runningSteps) {
+        if (!row.session_id) continue;
+        this.updateSession(row.session_id, {
+          status: "running",
+          error: null,
+        });
+      }
+    }
+
+    this.db.prepare("UPDATE runs SET status = 'running', updated_at = ? WHERE id = ?").run(now, run.id);
+    this.emitEvent(run.id, null, "run.resumed", {
+      runId: run.id,
+      mode: continuedCount > 0 ? "process_continue" : "thread_resume",
+      runningStepCount: runningSteps.length,
+      continuedCount,
+    });
+    if (run.github_issue_id) {
+      this.syncGitHubIssueAutomationStamp({
+        projectId: run.project_id,
+        runId: run.id,
+        issueId: run.github_issue_id,
+        state: continuedCount > 0 ? "running" : "queued",
       });
     }
     return true;
@@ -4445,12 +6152,35 @@ export class ForgeOpsStore {
       .map((row) => ({ ...row, payload: safeJsonParse(row.payload_json, {}) }));
   }
 
+  countRecentResumeFailures(stepId, windowMinutes = 30) {
+    const sid = String(stepId ?? "").trim();
+    if (!sid) return 0;
+    const minutesRaw = Number(windowMinutes);
+    const minutes = Number.isFinite(minutesRaw) && minutesRaw > 0
+      ? Math.floor(minutesRaw)
+      : 30;
+    const since = new Date(Date.now() - (minutes * 60 * 1000)).toISOString();
+    const row = this.db.prepare(
+      `SELECT COUNT(1) AS total
+       FROM events
+       WHERE step_id = ?
+         AND event_type = 'step.resume.result'
+         AND ts >= ?
+         AND payload_json LIKE '%"succeeded":false%'`
+    ).get(sid, since);
+    return Number(row?.total ?? 0);
+  }
+
   renderStepInput(stepKey, context, templateKey = null, promptMeta = {}) {
     const def = getStepByKey(templateKey ?? stepKey);
     if (!def) {
       return `Task:\n${context.task}\n\nProceed with ${stepKey}.`;
     }
-    return def.buildPrompt(context, {
+    const promptContext = {
+      ...(context && typeof context === "object" ? context : {}),
+      projectContext: this.buildStepProjectContext(context, stepKey),
+    };
+    return def.buildPrompt(promptContext, {
       stepKey,
       templateKey: templateKey ?? stepKey,
       attempt: Number(promptMeta?.attempt ?? 1),

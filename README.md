@@ -23,7 +23,7 @@ ForgeOps 是一个面向 AI 研发流程的控制平面（Control Plane），核
 
 ## 快速入口
 
-- `FORGEOPS_META_SKILL.md`：面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略）。
+- `FORGEOPS_META_SKILL.md`：面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略，含 `project init` 默认自动打开 Dashboard 与 `--no-open-ui` 约束）。
 - `docs/00-index.md`：文档地图与任务导航。
 
 ## 环境要求
@@ -56,6 +56,7 @@ forgeops project init --name my-project --type web --path /abs/path/to/my-projec
 - `--github-public` / `--github-private`：仓库可见性（默认 private）。
 - `--branch-protection`：显式开启 `main` 分支保护（默认行为）。
 - `--no-branch-protection`：初始化时跳过 `main` 分支保护。
+- `--no-open-ui`：初始化完成后不自动打开 Dashboard（默认会尝试打开 `http://127.0.0.1:4173`）。
 
 初始化后会生成：
 
@@ -66,7 +67,7 @@ forgeops project init --name my-project --type web --path /abs/path/to/my-projec
 - `.forgeops/invariants.json`：架构/边界不变量配置
 - `.forgeops/tools/check-invariants.mjs`：自定义不变量检查器
 - `.forgeops/tests/invariants-smoke.mjs`：结构化 smoke 测试脚本
-- `.forgeops/scheduler.yaml`：项目级 Cron 调度配置（每日 cleanup / entropy GC）
+- `.forgeops/scheduler.yaml`：项目级 Cron 调度配置（cleanup / issue auto-run / skill auto-promotion）
 - `.forgeops/tools/platform-preflight.mjs`：产品类型工具链预检查脚本
 - `.forgeops/tools/platform-smoke.mjs`：平台运行态 smoke 验收脚本
 
@@ -119,6 +120,7 @@ name: 我的项目流水线
 auto_merge: true
 merge_method: squash
 auto_close_issue_on_merge: true
+auto_merge_conflict_max_attempts: 2
 steps:
   - key: architect
   - key: issue
@@ -139,9 +141,12 @@ steps:
 - `issue`
 - `implement`
 - `test`
-- `platform-smoke`
 - `review`
 - `cleanup`
+
+兼容说明：
+
+- 历史配置中的 `platform-smoke` 会在解析时自动映射为 `test`（并入同一验收职责，不再作为独立步骤执行）。
 
 配置校验规则：
 
@@ -175,7 +180,7 @@ steps:
 - Providers 唯一入口（横切关注点）
 - 边界数据解析约束（boundary parse）
 - 文件规模、结构化日志基线
-- 机械 gate：`implement/test/review` 步骤完成后，Engine 会自动运行不变量检查（若配置了 `platform-smoke` 也会执行）。
+- 机械 gate：`implement/test/review` 步骤完成后，Engine 会自动运行不变量检查。
 - 阻塞策略：`error` 阻塞并触发重试；`warn` 允许 follow-up。
 - Follow-up 策略（默认）：在 `review` 步骤发现 warning 时自动创建 GitHub issue（不阻塞）。
 - 策略配置入口：`<projectRoot>/.forgeops/invariants.json > policy.followup`
@@ -196,8 +201,16 @@ ForgeOps v1 使用强约束流程：
 - 基线引用：优先 `origin/HEAD`（例如 `origin/main`）。
 - 调度执行目录会切换到 run 的 worktree，因此多个 run 可并发开发且互不污染。
 - `implement` 步骤完成后会自动执行 `commit + push + PR create(draft)`（创建者为系统配置 PAT 对应账号）；若 PR 已存在则复用。
-- `test/review` 步骤会在同一 PR 上持续回写进展评论（若配置了 `platform-smoke`，该步骤也会回写）。
+- `test/review` 步骤会在同一 PR 上持续回写进展评论。
 - `test` 默认同时承担平台验收（执行 `platform-preflight` / `platform-smoke` 脚本）并优先尝试小步自修（受预算约束），只有无法安全修复时才阻断失败。
+- `test` 步骤完成前，Engine 会强制执行 `platform-preflight` 与 `platform-smoke` 机械闸门；任一失败都会触发该步骤重试/失败，确保是“真实可运行产物”验收。
+- 各产品类型都可在平台验收里注入真实运行态命令并采集日志证据（stdout/stderr）：
+  - `miniapp`：`FORGEOPS_MINIAPP_DEBUG_CMD`（或 `smoke:miniapp|miniapp:smoke|test:miniapp`）
+  - `web`：`FORGEOPS_WEB_SMOKE_CMD`（或 `smoke:web|test:e2e|e2e`）
+  - `ios`：`FORGEOPS_IOS_SMOKE_CMD`（默认回退 `xcodebuild -list`）
+  - `microservice`：`FORGEOPS_MICROSERVICE_SMOKE_CMD`（可选；同时强制依赖同步与健康检查证据）
+  - `android`：`FORGEOPS_ANDROID_SMOKE_CMD`（默认回退 Android 构建命令）
+  - `serverless`：`FORGEOPS_SERVERLESS_SMOKE_CMD`（或 `smoke:serverless|test:functions|verify|test`）
 - 默认流水线里的 `cleanup` 发生在 run worktree 分支上（属于合并前的增量清理，不是 main 分支清理）。
 - run 完成后若 `workflow.yaml` 的 `auto_merge=true`（默认），会在 cleanup 后执行最终闸门（invariants + docs checks）并按 `merge_method` 自动合并 PR。
 - 自动合并成功后默认会自动关闭关联 issue（可通过 `auto_close_issue_on_merge=false` 关闭）。
@@ -207,10 +220,12 @@ ForgeOps v1 使用强约束流程：
 
 ## 定时自动化（Cron）
 
-每个项目可独立配置 `.forgeops/scheduler.yaml`，默认会启用两类 Cron 任务：
+每个项目可独立配置 `.forgeops/scheduler.yaml`，默认会启用四类 Cron 任务：
 
 - cleanup：每日熵增清理与质量回收（支持 `mode=lite|deep`）。
 - issueAutoRun：扫描 GitHub Issue 并自动触发 run（`label` 可做过滤；设置为 `*` 表示处理全部 open issue）。
+- skillPromotion：扫描项目内候选技能并自动提/更新项目技能 Draft PR（人审合并生效）。
+- globalSkillPromotion：扫描候选并自动提/更新 user-global 技能 Draft PR（默认要求项目内已有同名技能）。
 
 说明：
 
@@ -236,6 +251,26 @@ issueAutoRun:
   label: "forgeops:ready"
   onlyWhenIdle: true
   maxRunsPerTick: 3
+skillPromotion:
+  enabled: true
+  cron: "15 */6 * * *"
+  onlyWhenIdle: true
+  maxPromotionsPerTick: 1
+  minCandidateOccurrences: 2
+  lookbackDays: 14
+  minScore: 0.6
+  draft: true
+  roles: []
+globalSkillPromotion:
+  enabled: true
+  cron: "45 */12 * * *"
+  onlyWhenIdle: true
+  maxPromotionsPerTick: 1
+  minCandidateOccurrences: 3
+  lookbackDays: 30
+  minScore: 0.75
+  requireProjectSkill: true
+  draft: true
 ```
 
 ## 故障恢复（Step + Session）
@@ -253,6 +288,8 @@ issueAutoRun:
   - `forgeops scheduler set <projectId> --cleanup-mode deep --cron "0 2 * * *" --timezone "Asia/Shanghai" --task "每日熵增清理"`
   - `forgeops scheduler set <projectId> --issue-auto-cron "*/1 * * * *" --issue-auto-label "forgeops:ready" --issue-auto-only-when-idle true --issue-auto-max-runs-per-tick 3`
   - `forgeops scheduler set <projectId> --issue-auto-label "*"`（处理全部 open issue）
+  - `forgeops scheduler set <projectId> --skill-auto-enabled true --skill-auto-cron "15 */6 * * *" --skill-auto-min-occurrences 2 --skill-auto-min-score 0.6`
+  - `forgeops scheduler set <projectId> --global-skill-auto-enabled true --global-skill-auto-cron "45 */12 * * *" --global-skill-auto-require-project-skill true`
 - UI：
   - 选中项目后，在「项目调度配置（Cron）」面板修改并保存。
 - API：
@@ -273,6 +310,8 @@ issueAutoRun:
 - `auto_merge`（顶层）：run 完成后是否自动合并 PR（默认 `true`）
 - `merge_method`（顶层）：自动合并策略（`squash|merge|rebase`，默认 `squash`）
 - `auto_close_issue_on_merge`（顶层）：PR 自动合并成功后是否自动关闭关联 issue（默认 `true`）
+- `auto_merge_conflict_max_attempts`（顶层）：PR 合并冲突时自动修复并重试次数（`0-8`，默认 `2`；`0` 表示直接转人工）
+- merge 队列锁忙（`merge_queue_busy`）时会进入 `deferred`，不会将 run 标记为失败。
 
 示例：
 
@@ -282,6 +321,7 @@ name: ForgeOps 默认流水线
 auto_merge: true
 merge_method: squash
 auto_close_issue_on_merge: true
+auto_merge_conflict_max_attempts: 2
 steps:
   - key: architect
   - key: issue
@@ -311,6 +351,9 @@ steps:
 - CLI：
   - `forgeops workflow show <projectId>`
   - `forgeops workflow set <projectId> --yaml-file ./workflow.yaml`
+  - `forgeops workflow set <projectId> --auto-merge-conflict-max-attempts 3`
+  - `forgeops workflow set-conflict-retries <projectId> 3`
+  - `forgeops workflow get-conflict-retries <projectId>`
   - `forgeops workflow set <projectId> --reset-default`
 - UI：
   - 选中项目后，在「工作流配置（workflow.yaml）」面板直接编辑 YAML 并保存。
@@ -342,6 +385,7 @@ forgeops project init --name demo --type web --path /tmp/demo
 forgeops project list
 forgeops project metrics <projectId>
 forgeops issue create <projectId> "新增登录模块"
+forgeops issue create <projectId> "修复埋点字段" --mode quick
 forgeops issue create <projectId> "新增登录模块" --no-auto-run
 forgeops issue list <projectId>
 forgeops skill global-status
@@ -350,10 +394,16 @@ forgeops skill resolve <projectId>
 forgeops skill promote <projectId> --candidate .forgeops/skills/candidates/xxx.md --name miniapp-ui-polish --roles developer,tester
 forgeops skill promote-global <projectId> --candidate .forgeops/skills/candidates/xxx.md --name miniapp-ui-polish
 forgeops run create <projectId> "实现 OAuth 登录" --issue 123
+forgeops run create <projectId> "修复 iOS 启动崩溃" --issue 456 --mode quick
 forgeops run list --project <projectId>
 forgeops run show <runId>
+forgeops run stop <runId>
 forgeops run resume <runId>
+forgeops run stop-all [--project PROJECT_ID]
+forgeops run resume-all [--project PROJECT_ID]
 forgeops run attach <runId> [--step STEP_KEY] [--session SESSION_ID] [--thread THREAD_ID]
+forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL]
+forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--local-only]
 forgeops service install --host 127.0.0.1 --port 4173
 forgeops service start
 forgeops service stop
@@ -365,8 +415,13 @@ forgeops scheduler show <projectId>
 forgeops scheduler set <projectId> --cron "0 2 * * *" --timezone "Asia/Shanghai"
 forgeops scheduler set <projectId> --issue-auto-cron "*/1 * * * *" --issue-auto-label "forgeops:ready"
 forgeops scheduler set <projectId> --issue-auto-label "*"
+forgeops scheduler set <projectId> --skill-auto-enabled true --skill-auto-cron "15 */6 * * *" --skill-auto-min-occurrences 2 --skill-auto-min-score 0.6
+forgeops scheduler set <projectId> --global-skill-auto-enabled true --global-skill-auto-cron "45 */12 * * *" --global-skill-auto-require-project-skill true
 forgeops workflow show <projectId>
 forgeops workflow set <projectId> --yaml-file ./workflow.yaml
+forgeops workflow set <projectId> --auto-merge-conflict-max-attempts 3
+forgeops workflow set-conflict-retries <projectId> 3
+forgeops workflow get-conflict-retries <projectId>
 forgeops doctor
 forgeops doctor --json
 ```
@@ -374,16 +429,45 @@ forgeops doctor --json
 说明：
 - `forgeops issue create/list` 直接操作 GitHub Issue，不再使用本地 issue 管理。
 - `forgeops issue create` 默认会自动触发一个关联 run；可通过 `--no-auto-run` 关闭。
+- `forgeops issue create --mode quick` 会给 Issue 打上 `forgeops:quick` 标签，自动 run 走 quick 模式。
 - `forgeops issue create` 创建的 issue 会自动附加 `forgeops:ready` 标签（run 启动后会自动切换为 `forgeops:running`）。
 - `forgeops skill candidates/promote` 是独立技能治理链路，不会插入或阻塞标准需求 run DAG。
+- Scheduler 已支持独立技能治理 job：`skillPromotion`（项目内）与 `globalSkillPromotion`（user-global），定时扫描候选并自动提/更新 Draft PR。
 - `forgeops skill resolve` 可查看角色技能最终生效结果（优先级：`project-local > user-global > official`）。
 - `forgeops skill global-status/promote-global` 面向 user-global 技能库（固定路径：`$FORGEOPS_HOME/skills-global`，默认 `~/.forgeops/skills-global`）。
 - 技能晋升创建的 Draft PR 会自动追加 reviewer checklist 评论，便于人审收敛。
 - `forgeops run create` 必须提供 `--issue`（仅接受 GitHub Issue 编号，例如 `123` 或 `#123`）。
 - `forgeops run create` 的 `task` 参数可选；缺省时会按 Issue 自动生成任务文案。
+- `forgeops run create --mode quick|standard` 可选择执行模式：
+  - `quick`：优先只走 `implement -> test -> cleanup`（若项目 workflow 不含这些 step，会自动回落 `standard`）。
+  - `standard`：默认模式，按项目 workflow 正常执行。
+- `forgeops run stop` 会把运行中的 run 置为 `paused`，并优先通过 `SIGSTOP` 冻结当前执行会话（不中断 thread）。
+- `forgeops run resume` 同时支持两类恢复：
+  - `failed` run：按失败 step 重排并重试；
+  - `paused` run：优先 `SIGCONT` 继续原会话，若进程不存在则回退为同一 `thread_id` 的续跑。
+- `forgeops run stop-all` / `forgeops run resume-all` 支持批量停/续：
+  - 默认作用于全部项目；
+  - 可通过 `--project <projectId>` 仅作用于当前项目。
+- Codex 运行时默认以最高权限执行（`danger-full-access` + `approval_policy=never`），并在 `resume` 续跑链路保持同等权限，避免重试阶段权限降级。
+- 如需显式关闭该强制策略（不建议），可设置环境变量：`FORGEOPS_ENFORCE_DANGER_SANDBOX=false`。
 - 当 run 关联 GitHub Issue 时，系统会自动回写标签状态：`forgeops:running` / `forgeops:done` / `forgeops:failed`（仅作外部可见盖章，不作为强约束）。
 - 当 run 关联 GitHub Issue 时，系统会自动回写评论进展：`run started`、`pr linked`、`step completed`、`run completed/failed`（评论中包含对应 step 的 `runtime_session_id`）。
 - `forgeops run attach` 与 UI“在终端旁观”能力等价，都会打开 `codex resume --all <thread_id>`；若 run 仍在运行，建议只旁观不要发送新 prompt。
+- Codex 交互入口分为两个角色：
+  - `forgeops codex session`：ForgeOps 使用助手（偏平台流程与命令使用），默认在 ForgeOps 仓库根目录启动，并维护可复用 thread id。
+  - `forgeops codex project`：项目协作助手（偏具体项目推进），在项目上下文里继续工作并复用项目线程。
+- `forgeops codex session --session-key forgeops-meta` 可显式指定追踪 key（默认即 `forgeops-meta`）；同 key 会复用同一 thread。
+- `forgeops codex project` 面向“进入具体项目后继续开发”的场景：
+  - 默认根据当前 `cwd` 自动匹配已托管项目（也可显式传 `--project`）；
+  - 默认在项目根目录启动会话，并使用 `session-key=project:<projectId>` 追踪项目线程；
+  - 首次启动会把 `.forgeops/context.md` 与 `.forgeops/governance.md` 摘要注入启动提示，确保带着项目上下文进入会话；
+  - 启动提示内置 run mode 路由规则（`quick` vs `standard`），并要求创建 run 时显式传 `--mode`；
+  - `--local-only`：本地直改模式，只允许代码/测试/文档操作，禁止触发 `forgeops issue *` 和 `forgeops run *` 流水线命令；
+  - 默认不注入 `FORGEOPS_META_SKILL.md`，避免覆盖项目自身上下文；如需注入可传 `--meta-skill PATH`。
+- `forgeops codex session --client auto` 默认策略：优先保证“同一 tracked thread 可恢复”（走 CLI `resume`）；避免误开新会话。
+- `forgeops codex session --client app` 为显式 App 模式：会打开 Codex App，但当前 CLI 能力无法按 thread id 直接定位到指定会话（可能进入新会话或需手动切换）。
+- `forgeops codex session` 的 CLI 路径使用交互式 `codex`（`source-kind=cli`，可被 Codex App 默认会话列表识别），首轮默认注入 `FORGEOPS_META_SKILL.md` 作为执行约束（可用 `--no-meta-skill` 关闭，或用 `--meta-skill` 指定路径）。
+- 追踪映射持久化在 `$FORGEOPS_HOME/codex-session-registry.json`（默认 `~/.forgeops/codex-session-registry.json`）。
 
 ## 服务托管（Daemon）
 

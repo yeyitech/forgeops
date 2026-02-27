@@ -28,14 +28,16 @@ description: "Operate ForgeOps control-plane workflows via CLI end-to-end (proje
 ## A. 环境与服务探测
 
 ```bash
+forgeops service status
 forgeops doctor --json
 forgeops project list
 ```
 
-若控制面服务未运行，先启动：
+若控制面服务未安装/未运行，优先使用后台服务模式：
 
 ```bash
-forgeops start --port 4173
+forgeops service install
+forgeops service start
 ```
 
 ## B. 项目初始化（可选）
@@ -45,6 +47,13 @@ forgeops project init \
   --name <name> \
   --type web|miniapp|ios|microservice|android|serverless|other \
   --path <abs_path>
+```
+
+默认会在初始化成功后尝试打开 Dashboard（`http://127.0.0.1:4173`）。
+在 CI/脚本化场景可显式关闭自动打开：
+
+```bash
+forgeops project init --name <name> --type <type> --path <abs_path> --no-open-ui
 ```
 
 只做本地演练时，可显式关闭分支保护：
@@ -93,7 +102,7 @@ forgeops scheduler set <projectId> --enabled true --cleanup-enabled true --cron 
 
 ## E. 技能解析与晋升
 
-查看有效技能装配（official > user-global > project-local 合并后的结果）：
+查看有效技能装配（角色映射来自 official + user-global + project-local 合并；同名技能内容按 project-local > user-global > official 优先级解析）：
 
 ```bash
 forgeops skill resolve <projectId>

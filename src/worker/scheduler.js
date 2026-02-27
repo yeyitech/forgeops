@@ -55,6 +55,8 @@ function buildConfigSignature(config) {
     timezone: config.timezone,
     cleanup: config.cleanup,
     issueAutoRun: config.issueAutoRun,
+    skillPromotion: config.skillPromotion,
+    globalSkillPromotion: config.globalSkillPromotion,
   });
 }
 
@@ -65,14 +67,18 @@ export class ForgeOpsScheduler {
     this.mainlineSyncMinIntervalMs = Number(params.mainlineSyncMinIntervalMs ?? 10 * 60 * 1000);
     this.mainlineSyncRunLimit = Number(params.mainlineSyncRunLimit ?? 2);
     this.issueAutoRunMinIntervalMs = Number(params.issueAutoRunMinIntervalMs ?? 3 * 60 * 1000);
+    this.missedExecutionRecoveryMinIntervalMs = Number(params.missedExecutionRecoveryMinIntervalMs ?? 15 * 1000);
     this.running = false;
     this.syncTimer = null;
     this.jobs = new Map();
     this.inflightProjects = new Set();
     this.inflightIssueProjects = new Set();
+    this.inflightSkillPromotionProjects = new Set();
+    this.inflightGlobalSkillPromotionProjects = new Set();
     this.inflightMainlineProjects = new Set();
     this.lastMainlineSyncAtByProject = new Map();
     this.lastIssueAutoRunAtByProject = new Map();
+    this.lastMissedRecoveryAtByJob = new Map();
     this.lastSyncAt = null;
   }
 
@@ -96,6 +102,12 @@ export class ForgeOpsScheduler {
         cleanupMode: job.cleanupMode ?? "",
         label: job.label ?? "",
         maxRunsPerTick: job.maxRunsPerTick ?? 0,
+        minCandidateOccurrences: job.minCandidateOccurrences ?? 0,
+        lookbackDays: job.lookbackDays ?? 0,
+        minScore: job.minScore ?? 0,
+        maxPromotionsPerTick: job.maxPromotionsPerTick ?? 0,
+        requireProjectSkill: job.requireProjectSkill ?? false,
+        draft: job.draft ?? true,
         syncedAt: job.syncedAt,
       })),
     };
@@ -131,9 +143,12 @@ export class ForgeOpsScheduler {
     this.jobs.clear();
     this.inflightProjects.clear();
     this.inflightIssueProjects.clear();
+    this.inflightSkillPromotionProjects.clear();
+    this.inflightGlobalSkillPromotionProjects.clear();
     this.inflightMainlineProjects.clear();
     this.lastMainlineSyncAtByProject.clear();
     this.lastIssueAutoRunAtByProject.clear();
+    this.lastMissedRecoveryAtByJob.clear();
   }
 
   async syncNow() {
@@ -160,6 +175,8 @@ export class ForgeOpsScheduler {
       const signature = buildConfigSignature(config);
       this.#syncCleanupJob(project, config, loaded.source, signature);
       this.#syncIssueAutoRunJob(project, config, loaded.source, signature);
+      this.#syncSkillPromotionJob(project, config, loaded.source, signature);
+      this.#syncGlobalSkillPromotionJob(project, config, loaded.source, signature);
       this.#syncMergedPrMainline(project);
     }
 
@@ -197,6 +214,64 @@ export class ForgeOpsScheduler {
       // ignore
     }
     this.jobs.delete(jobKey);
+    this.lastMissedRecoveryAtByJob.delete(jobKey);
+  }
+
+  #attachMissedExecutionRecovery(params) {
+    const jobKey = String(params?.jobKey ?? "").trim();
+    const eventPrefix = String(params?.eventPrefix ?? "").trim();
+    const project = params?.project ?? {};
+    const scheduledTask = params?.scheduledTask;
+    const trigger = typeof params?.trigger === "function" ? params.trigger : null;
+    if (!jobKey || !eventPrefix || !scheduledTask || !trigger) return;
+
+    scheduledTask.on("execution:missed", (context) => {
+      const nowMs = Date.now();
+      const minIntervalMs = Number.isFinite(this.missedExecutionRecoveryMinIntervalMs)
+        ? Math.max(5_000, Math.floor(this.missedExecutionRecoveryMinIntervalMs))
+        : 15_000;
+      const lastRecoveryAtMs = Number(this.lastMissedRecoveryAtByJob.get(jobKey) ?? 0);
+      const expectedAt = context?.date instanceof Date ? context.date.toISOString() : "";
+      const observedAt = context?.triggeredAt instanceof Date ? context.triggeredAt.toISOString() : nowIso();
+      if (lastRecoveryAtMs > 0 && nowMs - lastRecoveryAtMs < minIntervalMs) {
+        this.store.emitEvent(null, null, `scheduler.${eventPrefix}.missed_recovery_throttled`, {
+          projectId: project.id,
+          projectName: project.name,
+          expectedAt,
+          observedAt,
+          minIntervalMs,
+          cooldownRemainingMs: minIntervalMs - (nowMs - lastRecoveryAtMs),
+        });
+        return;
+      }
+
+      this.lastMissedRecoveryAtByJob.set(jobKey, nowMs);
+      this.store.emitEvent(null, null, `scheduler.${eventPrefix}.missed_recovery_started`, {
+        projectId: project.id,
+        projectName: project.name,
+        expectedAt,
+        observedAt,
+      });
+      Promise.resolve()
+        .then(() => trigger())
+        .then(() => {
+          this.store.emitEvent(null, null, `scheduler.${eventPrefix}.missed_recovery_done`, {
+            projectId: project.id,
+            projectName: project.name,
+            expectedAt,
+            observedAt,
+          });
+        })
+        .catch((err) => {
+          this.store.emitEvent(null, null, `scheduler.${eventPrefix}.missed_recovery_failed`, {
+            projectId: project.id,
+            projectName: project.name,
+            expectedAt,
+            observedAt,
+            error: safeErrorMessage(err),
+          });
+        });
+    });
   }
 
   #syncCleanupJob(project, config, source, signature) {
@@ -235,15 +310,22 @@ export class ForgeOpsScheduler {
     const kind = "cleanup";
     const jobKey = this.#jobKey(project.id, kind);
     const cleanupMode = normalizeCleanupMode(config.cleanup.mode);
+    const trigger = () => this.#triggerCleanup(project, config);
     const scheduledTask = cron.schedule(
       config.cleanup.cron,
-      () => {
-        void this.#triggerCleanup(project, config);
-      },
+      async () => trigger(),
       {
         timezone: config.timezone,
+        noOverlap: true,
       }
     );
+    this.#attachMissedExecutionRecovery({
+      jobKey,
+      eventPrefix: "cleanup",
+      project,
+      scheduledTask,
+      trigger,
+    });
 
     this.jobs.set(jobKey, {
       kind,
@@ -314,15 +396,22 @@ export class ForgeOpsScheduler {
     const kind = "issueAutoRun";
     const jobKey = this.#jobKey(project.id, kind);
     const rule = config.issueAutoRun ?? {};
+    const trigger = () => this.#triggerIssueAutoRun(project, config);
     const scheduledTask = cron.schedule(
       rule.cron,
-      () => {
-        void this.#triggerIssueAutoRun(project, config);
-      },
+      async () => trigger(),
       {
         timezone: config.timezone,
+        noOverlap: true,
       }
     );
+    this.#attachMissedExecutionRecovery({
+      jobKey,
+      eventPrefix: "issue_autorun",
+      project,
+      scheduledTask,
+      trigger,
+    });
 
     this.jobs.set(jobKey, {
       kind,
@@ -347,6 +436,181 @@ export class ForgeOpsScheduler {
       label: rule.label,
       onlyWhenIdle: Boolean(rule.onlyWhenIdle),
       maxRunsPerTick: Number(rule.maxRunsPerTick ?? 0),
+    });
+  }
+
+  #syncSkillPromotionJob(project, config, source, signature) {
+    const kind = "skillPromotion";
+    const jobKey = this.#jobKey(project.id, kind);
+    const current = this.jobs.get(jobKey);
+    const rule = config.skillPromotion ?? {};
+    const enabled = config.enabled && rule.enabled;
+
+    if (!enabled) {
+      if (current) {
+        this.#unschedule(jobKey);
+        this.store.emitEvent(null, null, "scheduler.skill_promotion.job.disabled", {
+          projectId: project.id,
+          projectName: project.name,
+        });
+      }
+      return;
+    }
+
+    if (!cron.validate(rule.cron)) {
+      if (current) this.#unschedule(jobKey);
+      this.store.emitEvent(null, null, "scheduler.skill_promotion.job.invalid_cron", {
+        projectId: project.id,
+        projectName: project.name,
+        cron: rule.cron,
+        source,
+      });
+      return;
+    }
+
+    if (current && current.signature === signature) return;
+    if (current) this.#unschedule(jobKey);
+    this.#scheduleSkillPromotionJob(project, config, signature);
+  }
+
+  #scheduleSkillPromotionJob(project, config, signature) {
+    const kind = "skillPromotion";
+    const jobKey = this.#jobKey(project.id, kind);
+    const rule = config.skillPromotion ?? {};
+    const trigger = () => this.#triggerSkillPromotion(project, config);
+    const scheduledTask = cron.schedule(
+      rule.cron,
+      async () => trigger(),
+      {
+        timezone: config.timezone,
+        noOverlap: true,
+      }
+    );
+    this.#attachMissedExecutionRecovery({
+      jobKey,
+      eventPrefix: "skill_promotion",
+      project,
+      scheduledTask,
+      trigger,
+    });
+
+    this.jobs.set(jobKey, {
+      kind,
+      projectId: project.id,
+      projectName: project.name,
+      cron: rule.cron,
+      timezone: config.timezone,
+      onlyWhenIdle: Boolean(rule.onlyWhenIdle),
+      minCandidateOccurrences: Number(rule.minCandidateOccurrences ?? 0),
+      lookbackDays: Number(rule.lookbackDays ?? 0),
+      minScore: Number(rule.minScore ?? 0),
+      maxPromotionsPerTick: Number(rule.maxPromotionsPerTick ?? 0),
+      draft: rule.draft !== false,
+      signature,
+      syncedAt: nowIso(),
+      handle: scheduledTask,
+    });
+
+    this.store.emitEvent(null, null, "scheduler.skill_promotion.job.scheduled", {
+      projectId: project.id,
+      projectName: project.name,
+      cron: rule.cron,
+      timezone: config.timezone,
+      onlyWhenIdle: Boolean(rule.onlyWhenIdle),
+      minCandidateOccurrences: Number(rule.minCandidateOccurrences ?? 0),
+      lookbackDays: Number(rule.lookbackDays ?? 0),
+      minScore: Number(rule.minScore ?? 0),
+      maxPromotionsPerTick: Number(rule.maxPromotionsPerTick ?? 0),
+      draft: rule.draft !== false,
+      roles: Array.isArray(rule.roles) ? rule.roles : [],
+    });
+  }
+
+  #syncGlobalSkillPromotionJob(project, config, source, signature) {
+    const kind = "globalSkillPromotion";
+    const jobKey = this.#jobKey(project.id, kind);
+    const current = this.jobs.get(jobKey);
+    const rule = config.globalSkillPromotion ?? {};
+    const enabled = config.enabled && rule.enabled;
+
+    if (!enabled) {
+      if (current) {
+        this.#unschedule(jobKey);
+        this.store.emitEvent(null, null, "scheduler.global_skill_promotion.job.disabled", {
+          projectId: project.id,
+          projectName: project.name,
+        });
+      }
+      return;
+    }
+
+    if (!cron.validate(rule.cron)) {
+      if (current) this.#unschedule(jobKey);
+      this.store.emitEvent(null, null, "scheduler.global_skill_promotion.job.invalid_cron", {
+        projectId: project.id,
+        projectName: project.name,
+        cron: rule.cron,
+        source,
+      });
+      return;
+    }
+
+    if (current && current.signature === signature) return;
+    if (current) this.#unschedule(jobKey);
+    this.#scheduleGlobalSkillPromotionJob(project, config, signature);
+  }
+
+  #scheduleGlobalSkillPromotionJob(project, config, signature) {
+    const kind = "globalSkillPromotion";
+    const jobKey = this.#jobKey(project.id, kind);
+    const rule = config.globalSkillPromotion ?? {};
+    const trigger = () => this.#triggerGlobalSkillPromotion(project, config);
+    const scheduledTask = cron.schedule(
+      rule.cron,
+      async () => trigger(),
+      {
+        timezone: config.timezone,
+        noOverlap: true,
+      }
+    );
+    this.#attachMissedExecutionRecovery({
+      jobKey,
+      eventPrefix: "global_skill_promotion",
+      project,
+      scheduledTask,
+      trigger,
+    });
+
+    this.jobs.set(jobKey, {
+      kind,
+      projectId: project.id,
+      projectName: project.name,
+      cron: rule.cron,
+      timezone: config.timezone,
+      onlyWhenIdle: Boolean(rule.onlyWhenIdle),
+      minCandidateOccurrences: Number(rule.minCandidateOccurrences ?? 0),
+      lookbackDays: Number(rule.lookbackDays ?? 0),
+      minScore: Number(rule.minScore ?? 0),
+      maxPromotionsPerTick: Number(rule.maxPromotionsPerTick ?? 0),
+      requireProjectSkill: rule.requireProjectSkill !== false,
+      draft: rule.draft !== false,
+      signature,
+      syncedAt: nowIso(),
+      handle: scheduledTask,
+    });
+
+    this.store.emitEvent(null, null, "scheduler.global_skill_promotion.job.scheduled", {
+      projectId: project.id,
+      projectName: project.name,
+      cron: rule.cron,
+      timezone: config.timezone,
+      onlyWhenIdle: Boolean(rule.onlyWhenIdle),
+      minCandidateOccurrences: Number(rule.minCandidateOccurrences ?? 0),
+      lookbackDays: Number(rule.lookbackDays ?? 0),
+      minScore: Number(rule.minScore ?? 0),
+      maxPromotionsPerTick: Number(rule.maxPromotionsPerTick ?? 0),
+      requireProjectSkill: rule.requireProjectSkill !== false,
+      draft: rule.draft !== false,
     });
   }
 
@@ -461,6 +725,116 @@ export class ForgeOpsScheduler {
     }
   }
 
+  async #triggerSkillPromotion(project, config) {
+    const rule = config.skillPromotion ?? {};
+    if (this.inflightSkillPromotionProjects.has(project.id)) {
+      this.store.emitEvent(null, null, "scheduler.skill_promotion.skipped_inflight", {
+        projectId: project.id,
+        projectName: project.name,
+      });
+      return;
+    }
+
+    if (rule.onlyWhenIdle) {
+      const hasRunning = this.store
+        .listRuns(project.id)
+        .some((run) => String(run.status) === "running");
+      if (hasRunning) {
+        this.store.emitEvent(null, null, "scheduler.skill_promotion.skipped_busy", {
+          projectId: project.id,
+          projectName: project.name,
+        });
+        return;
+      }
+    }
+
+    this.inflightSkillPromotionProjects.add(project.id);
+    try {
+      const result = this.store.autoPromoteProjectSkillCandidates({
+        projectId: project.id,
+        maxPromotionsPerTick: Number(rule.maxPromotionsPerTick ?? 1),
+        minCandidateOccurrences: Number(rule.minCandidateOccurrences ?? 2),
+        lookbackDays: Number(rule.lookbackDays ?? 14),
+        minScore: Number(rule.minScore ?? 0.6),
+        draft: rule.draft !== false,
+        roles: Array.isArray(rule.roles) ? rule.roles : [],
+      });
+      this.store.emitEvent(null, null, "scheduler.skill_promotion.tick_done", {
+        projectId: project.id,
+        projectName: project.name,
+        totalCandidates: Number(result.totalCandidates ?? 0),
+        groupedSkills: Number(result.groupedSkills ?? 0),
+        eligibleCount: Number(result.eligibleCount ?? 0),
+        promotedCount: Array.isArray(result.promoted) ? result.promoted.length : 0,
+        skippedCount: Array.isArray(result.skipped) ? result.skipped.length : 0,
+        failedCount: Array.isArray(result.failed) ? result.failed.length : 0,
+      });
+    } catch (err) {
+      this.store.emitEvent(null, null, "scheduler.skill_promotion.tick_failed", {
+        projectId: project.id,
+        projectName: project.name,
+        error: safeErrorMessage(err),
+      });
+    } finally {
+      this.inflightSkillPromotionProjects.delete(project.id);
+    }
+  }
+
+  async #triggerGlobalSkillPromotion(project, config) {
+    const rule = config.globalSkillPromotion ?? {};
+    if (this.inflightGlobalSkillPromotionProjects.has(project.id)) {
+      this.store.emitEvent(null, null, "scheduler.global_skill_promotion.skipped_inflight", {
+        projectId: project.id,
+        projectName: project.name,
+      });
+      return;
+    }
+
+    if (rule.onlyWhenIdle) {
+      const hasRunning = this.store
+        .listRuns(project.id)
+        .some((run) => String(run.status) === "running");
+      if (hasRunning) {
+        this.store.emitEvent(null, null, "scheduler.global_skill_promotion.skipped_busy", {
+          projectId: project.id,
+          projectName: project.name,
+        });
+        return;
+      }
+    }
+
+    this.inflightGlobalSkillPromotionProjects.add(project.id);
+    try {
+      const result = this.store.autoPromoteGlobalSkillCandidates({
+        projectId: project.id,
+        maxPromotionsPerTick: Number(rule.maxPromotionsPerTick ?? 1),
+        minCandidateOccurrences: Number(rule.minCandidateOccurrences ?? 3),
+        lookbackDays: Number(rule.lookbackDays ?? 30),
+        minScore: Number(rule.minScore ?? 0.75),
+        requireProjectSkill: rule.requireProjectSkill !== false,
+        draft: rule.draft !== false,
+      });
+      this.store.emitEvent(null, null, "scheduler.global_skill_promotion.tick_done", {
+        projectId: project.id,
+        projectName: project.name,
+        totalCandidates: Number(result.totalCandidates ?? 0),
+        groupedSkills: Number(result.groupedSkills ?? 0),
+        eligibleCount: Number(result.eligibleCount ?? 0),
+        promotedCount: Array.isArray(result.promoted) ? result.promoted.length : 0,
+        skippedCount: Array.isArray(result.skipped) ? result.skipped.length : 0,
+        failedCount: Array.isArray(result.failed) ? result.failed.length : 0,
+      });
+    } catch (err) {
+      this.store.emitEvent(null, null, "scheduler.global_skill_promotion.tick_failed", {
+        projectId: project.id,
+        projectName: project.name,
+        error: safeErrorMessage(err),
+      });
+    } finally {
+      this.inflightGlobalSkillPromotionProjects.delete(project.id);
+    }
+  }
+
   async #triggerIssueAutoRun(project, config) {
     const rule = config.issueAutoRun ?? {};
     const rawLabel = String(rule.label ?? "").trim();
@@ -527,6 +901,10 @@ export class ForgeOpsScheduler {
           skippedExisting += 1;
           continue;
         }
+        const issueLabels = Array.isArray(issue?.labels)
+          ? issue.labels.map((item) => String(item ?? "").trim().toLowerCase()).filter(Boolean)
+          : [];
+        const runMode = issueLabels.includes("forgeops:quick") ? "quick" : "standard";
         const title = String(issue?.title ?? "").trim() || "未命名需求";
         const task = `[AUTO-ISSUE] 处理 GitHub Issue #${issueId}: ${title}`;
         try {
@@ -534,6 +912,7 @@ export class ForgeOpsScheduler {
             projectId: project.id,
             issueId,
             task,
+            runMode,
           });
           createdRuns += 1;
           this.store.emitEvent(run.id, null, "scheduler.issue_autorun.run_created", {
@@ -543,6 +922,7 @@ export class ForgeOpsScheduler {
             issueTitle: title,
             runId: run.id,
             task,
+            runMode,
           });
         } catch (err) {
           this.store.emitEvent(null, null, "scheduler.issue_autorun.run_failed", {
@@ -551,6 +931,7 @@ export class ForgeOpsScheduler {
             issueId,
             issueTitle: title,
             task,
+            runMode,
             error: safeErrorMessage(err),
           });
         }

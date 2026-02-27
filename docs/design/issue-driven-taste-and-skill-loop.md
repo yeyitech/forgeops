@@ -1,7 +1,7 @@
 ## 需求驱动的品位注入与技能沉淀闭环（不新增实体）
 
 Status: Active  
-Updated: 2026-02-26
+Updated: 2026-02-27
 
 ## 背景
 
@@ -102,5 +102,6 @@ ForgeOps 已进入 `issue-only` 运行模型：每个 run 都绑定 GitHub Issue
 1. 方法论基线：`docs/design/skill-driven-delivery.md`
 2. 本地演化闭环：`docs/design/skill-evolution-closed-loop.md`
 3. 群体进化服务：`docs/design/skill-collective-evolution-service.md`
+4. 自动晋升调度：`docs/design/skill-auto-promotion-scheduler.md`
 
 本文件聚焦“无新增实体”的落地路径：让 Issue 成为输入入口，让 Cleanup 成为沉淀出口。

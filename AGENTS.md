@@ -21,6 +21,10 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
 
 - `README.md`
   - 启动方式、CLI、API 总览。
+- `docs/user-guide.md`
+  - 面向用户的操作手册（启动、模式选择、常见流程与排障）。
+- `docs/user-quickstart.md`
+  - 面向用户的 1 页上手卡（最小命令集与模式选择规则）。
 - `FORGEOPS_META_SKILL.md`
   - 面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略）。
 - `docs/00-index.md`
@@ -32,6 +36,8 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
   - 系统边界、数据流、执行主循环。
 - `docs/architecture/layering.md`
   - 依赖方向与分层约束。
+- `docs/architecture/ADR-0001.md`
+  - 当前架构基线与增量决策。
 - `docs/runtime-adapter-design.md`
   - Runtime Adapter 契约与当前实现。
 
@@ -49,6 +55,8 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
   - 基于 issue 注入用户偏好、自动补齐缺口并在 cleanup 沉淀技能候选（不新增实体）。
 - `docs/design/skill-promotion-pr-review-loop.md`
   - 基于候选技能创建独立晋升 PR，经人审后合并（与需求流水线解耦）。
+- `docs/design/skill-auto-promotion-scheduler.md`
+  - 定时扫描候选并自动提/更新 Draft PR（项目内与 user-global 双链路）。
 - `docs/design/user-global-skill-library.md`
   - 在 `$FORGEOPS_HOME/skills-global` 建立用户级全局技能库与审计链路。
 - `docs/design/platform-toolchain-quality-gate.md`
@@ -78,6 +86,11 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
   - 文档新鲜度规则与检查方式。
 - `docs/meta/doc-structure.md`
   - 文档结构完整性规则与检查方式。
+
+### 3.5 上下文层
+
+- `docs/context/index.md`
+  - 步骤级上下文文档索引与注册入口。
 
 ### 4. 计划与规格层
 
@@ -122,6 +135,9 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
 - 设计技能候选晋升 PR 人审链路（与需求流水线解耦）：
   - `docs/design/skill-promotion-pr-review-loop.md`、`docs/design/skill-evolution-closed-loop.md`
   - `src/core/store.js`、`src/core/git.js`、`src/cli/index.js`、`src/server/app.js`
+- 设计技能候选定时自动晋升链路（项目内 + user-global）：
+  - `docs/design/skill-auto-promotion-scheduler.md`、`docs/design/skill-promotion-pr-review-loop.md`
+  - `src/core/scheduler-config.js`、`src/worker/scheduler.js`、`src/core/store.js`、`src/core/git.js`
 - 设计 user-global 技能库与审计链路（跨项目复用）：
   - `docs/design/user-global-skill-library.md`、`docs/design/skill-collective-evolution-service.md`
   - `src/core/store.js`、`src/cli/index.js`、`src/server/app.js`

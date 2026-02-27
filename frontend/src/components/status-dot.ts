@@ -13,6 +13,7 @@ export class StatusDot extends LitElement {
       queued: "排队中",
       pending: "待处理",
       running: "运行中",
+      paused: "已暂停",
       active: "活跃",
       done: "已完成",
       completed: "已完成",
@@ -77,6 +78,7 @@ export class StatusDot extends LitElement {
       --status-color: #38bdf8;
     }
 
+    :host([status="paused"]) .dot,
     :host([status="retry"]) .dot,
     :host([status="pending"]) .dot,
     :host([status="queued"]) .dot {

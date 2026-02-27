@@ -1,7 +1,31 @@
 import { LitElement, css, html, svg } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { attachRunTerminal, createIssue, createProject, createRun, getEngineState, getProjectMetrics, getProjectSchedulerConfig, getProjectWorkflowConfig, getRunDetail, getSystemConfig, listIssues, listProjects, listRuns, pickProjectRootDirectory, resumeRun, updateEngineState, updateProjectSchedulerConfig, updateProjectWorkflowConfig, updateSystemConfig } from "./lib/api";
-import type { DoctorReport, EngineState, Issue, ProcessRole, ProcessTag, Project, ProjectMetrics, RunDetail, RunQualityGateStatus, RunQualityGates, RunRow, SchedulerConfig, SessionRow, StepRow, SystemConfig, WorkflowConfigDoc, WorkflowResolvedStep } from "./lib/types";
+import {
+  attachRunTerminal,
+  createIssue,
+  createProject,
+  createRun,
+  getEngineState,
+  getGlobalTokenUsage,
+  getProjectMetrics,
+  getProjectSchedulerConfig,
+  getProjectWorkflowConfig,
+  getRunDetail,
+  getSystemConfig,
+  listIssues,
+  listProjects,
+  listRuns,
+  pickProjectRootDirectory,
+  resumeAllPausedRuns,
+  resumeRun,
+  stopAllRuns,
+  stopRun,
+  updateEngineState,
+  updateProjectSchedulerConfig,
+  updateProjectWorkflowConfig,
+  updateSystemConfig,
+} from "./lib/api";
+import type { DoctorReport, EngineState, GlobalTokenUsage, Issue, ProcessRole, ProcessTag, Project, ProjectMetrics, RunDetail, RunQualityGateStatus, RunQualityGates, RunRow, SchedulerConfig, SessionRow, StepRow, SystemConfig, WorkflowConfigDoc, WorkflowResolvedStep } from "./lib/types";
 import "./components/status-dot";
 import type { AgentTeam3DNode } from "./components/agent-team-3d";
 
@@ -17,6 +41,7 @@ type ProjectCreateProgressGroupKey = "precheck" | "scaffold" | "git" | "finalize
 const CREATE_PROJECT_PROGRESS_GROUP_ORDER: ProjectCreateProgressGroupKey[] = ["precheck", "scaffold", "git", "finalize"];
 const DEFAULT_SCHEDULER_TIMEZONE = "Asia/Shanghai";
 const SELECTED_PROJECT_STORAGE_KEY = "forgeops:selectedProjectId";
+const PLATFORM_GATE_ONLY_FAILED_STORAGE_KEY_PREFIX = "forgeops:platformGateOnlyFailed:";
 
 type ProjectAgentTeamRow = {
   agentId: string;
@@ -27,6 +52,46 @@ type ProjectAgentTeamRow = {
   failedCount: number;
   state: "running" | "failed" | "waiting";
   stateText: string;
+};
+
+type RuntimeRiskSignalRow = {
+  id: number;
+  ts: string;
+  eventType: "runtime.session.risk" | "runtime.session.rotate.recommended";
+  severity: "risk" | "rotate";
+  stepId: string;
+  stepKey: string;
+  threadId: string;
+  turnId: string;
+  reason: string;
+  recommendedAction: string;
+  evidence: string[];
+};
+
+type PlatformGateSignalRow = {
+  id: number;
+  ts: string;
+  eventType: "platform.gate.checked" | "platform.gate.failed";
+  stepId: string;
+  stepKey: string;
+  gate: string;
+  ok: boolean;
+  productType: string;
+  scriptPath: string;
+  failedRequiredCount: number;
+  reason: string;
+  error: string;
+  stderr: string;
+};
+
+type PlatformGateRollupRow = {
+  gate: string;
+  status: "done" | "failed" | "pending";
+  statusText: string;
+  latestEventId: number;
+  latestTs: string;
+  stepLabel: string;
+  reason: string;
 };
 
 @customElement("forgeops-app")
@@ -42,6 +107,7 @@ export class ForgeOpsApp extends LitElement {
   @state() private messageTone: "success" | "error" | "info" = "info";
   @state() private loading = false;
   @state() private projectDataLoading = false;
+  @state() private projectMetricsLoading = false;
   @state() private projectMetrics: ProjectMetrics | null = null;
   @state() private sidebarWidth = 320;
   @state() private desiredConcurrency = 2;
@@ -50,20 +116,25 @@ export class ForgeOpsApp extends LitElement {
   @state() private workflowYamlDraft = "";
   @state() private doctor: DoctorReport | null = null;
   @state() private systemConfig: SystemConfig | null = null;
+  @state() private globalTokenUsage: GlobalTokenUsage | null = null;
+  @state() private globalTokenUsageUnsupported = false;
   @state() private currentPage: "project_overview" | "project_issues" | "project_runs" | "project_workflow" | "project_scheduler" | "system" = "project_overview";
   @state() private showCreateProjectModal = false;
+  @state() private showGlobalTokenUsageModal = false;
   @state() private pipelineSelectedStepKey = "";
   @state() private pipelineFullscreenSource: "project" | "run" | "" = "";
   @state() private expandRelatedProcesses = false;
   @state() private issuePrView: "all" | "open" | "closed" = "all";
   @state() private runInsightTab: "events" | "artifacts" = "events";
   @state() private runtimeFocusTab: "session" | "step" = "session";
+  @state() private platformGateOnlyFailed = false;
   @state() private runTaskDraft = "";
   @state() private runIssueDraft = "";
+  @state() private runModeDraft: "standard" | "quick" = "standard";
   @state() private runLaunchPanelOpen = false;
   @state() private agentTeam3DReady = false;
   @state() private showAgentTeam3DModal = false;
-  @state() private schedulerJobFilter: "all" | "cleanup" | "issueAutoRun" = "all";
+  @state() private schedulerJobFilter: "all" | "cleanup" | "issueAutoRun" | "skillPromotion" | "globalSkillPromotion" = "all";
   @state() private createProjectInFlight = false;
   @state() private createProjectProgress: ProjectCreateProgressRow[] = [];
   @state() private createProjectRootPath = "";
@@ -657,6 +728,96 @@ export class ForgeOpsApp extends LitElement {
       display: grid;
       gap: 6px;
       padding: 10px;
+    }
+
+    .issue-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .issue-chip-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .issue-status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      padding: 2px 8px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      white-space: nowrap;
+      background: color-mix(in srgb, var(--bg-elev-2), transparent 5%);
+      color: var(--text-muted);
+    }
+
+    .issue-status-chip.open {
+      border-color: color-mix(in srgb, var(--accent-ok), transparent 56%);
+      background: color-mix(in srgb, var(--accent-ok), transparent 90%);
+      color: color-mix(in srgb, var(--accent-ok), white 14%);
+    }
+
+    .issue-status-chip.in-progress {
+      border-color: color-mix(in srgb, var(--accent), transparent 54%);
+      background: color-mix(in srgb, var(--accent), transparent 90%);
+      color: color-mix(in srgb, var(--accent), white 14%);
+    }
+
+    .issue-status-chip.blocked {
+      border-color: color-mix(in srgb, var(--accent-warn), transparent 50%);
+      background: color-mix(in srgb, var(--accent-warn), transparent 88%);
+      color: color-mix(in srgb, var(--accent-warn), white 10%);
+    }
+
+    .issue-status-chip.closed {
+      border-color: color-mix(in srgb, var(--text-soft), transparent 54%);
+      background: color-mix(in srgb, var(--bg-elev-2), transparent 3%);
+      color: var(--text-soft);
+    }
+
+    .issue-run-chip {
+      min-height: 0;
+      border-radius: var(--radius-pill);
+      padding: 2px 9px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      border-color: color-mix(in srgb, var(--accent), transparent 52%);
+      background: color-mix(in srgb, var(--accent-soft), var(--bg-elev-3) 72%);
+      color: var(--text-primary);
+      box-shadow: none;
+      transform: none;
+    }
+
+    .issue-run-chip:not(:disabled):hover {
+      border-color: color-mix(in srgb, var(--accent), transparent 18%);
+      transform: none;
+      background: color-mix(in srgb, var(--accent-soft), var(--bg-elev-3) 62%);
+    }
+
+    .issue-label-chip {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      padding: 2px 8px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      background: color-mix(in srgb, var(--bg-elev-2), transparent 5%);
+      white-space: nowrap;
     }
 
     .overview-running-list {
@@ -1443,6 +1604,201 @@ export class ForgeOpsApp extends LitElement {
       max-width: 100%;
     }
 
+    .system-token-card {
+      border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--bg-elev-2), transparent 2%);
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .system-token-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 20px;
+    }
+
+    .token-unit-summary {
+      color: var(--text-muted);
+      font-size: 10px;
+      font-family: var(--font-mono);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .token-unit-chip {
+      display: none;
+    }
+
+    .token-chart-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) minmax(360px, 1.45fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .token-chart-card {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--bg-elev-3), transparent 8%);
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .token-chart-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .token-pie-layout {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .token-pie {
+      --token-pie-gradient: conic-gradient(var(--accent) 0turn, var(--accent) 1turn);
+      width: 180px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--token-pie-gradient);
+      position: relative;
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-strong), transparent 38%);
+    }
+
+    .token-pie::after {
+      content: "";
+      position: absolute;
+      inset: 24%;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--bg-elev-2), black 6%);
+      border: 1px solid color-mix(in srgb, var(--border-subtle), transparent 12%);
+    }
+
+    .token-pie-center {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      z-index: 1;
+      text-align: center;
+      gap: 2px;
+    }
+
+    .token-pie-center .value {
+      font-size: 16px;
+      font-weight: 650;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      line-height: 1;
+    }
+
+    .token-pie-center .label {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      line-height: 1;
+    }
+
+    .token-legend {
+      display: grid;
+      gap: 6px;
+      align-content: start;
+    }
+
+    .token-legend-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 0;
+    }
+
+    .token-legend-main {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .token-legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dot-color, var(--accent));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--dot-color, var(--accent)), transparent 45%);
+      flex: none;
+    }
+
+    .token-legend-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .token-legend-value {
+      color: var(--text-primary);
+      font-size: 10px;
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      line-height: 1;
+    }
+
+    .token-line-wrap {
+      border: 1px solid color-mix(in srgb, var(--border-subtle), transparent 10%);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--bg-elev-2), black 8%);
+      padding: 6px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .token-line-svg {
+      width: 100%;
+      height: 220px;
+      display: block;
+    }
+
+    .token-line-axis-labels {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 4px;
+      color: var(--text-soft);
+      font-size: 10px;
+      font-family: var(--font-mono);
+    }
+
+    .token-line-axis-labels span {
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 1000px) {
+      .token-chart-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .token-pie-layout {
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+    }
+
     .system-visual-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1576,6 +1932,167 @@ export class ForgeOpsApp extends LitElement {
     .session-grid {
       display: grid;
       gap: 8px;
+    }
+
+    .runtime-risk-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+
+    .runtime-risk-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 8px;
+    }
+
+    .runtime-risk-card {
+      border: 1px solid color-mix(in srgb, var(--accent-warn), transparent 60%);
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--accent-warn), transparent 92%);
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .runtime-risk-card.rotate {
+      border-color: color-mix(in srgb, var(--accent-danger), transparent 56%);
+      background: color-mix(in srgb, var(--accent-danger), transparent 92%);
+    }
+
+    .runtime-risk-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .runtime-risk-title {
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--text-primary);
+      line-height: 1.2;
+    }
+
+    .platform-gate-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+
+    .platform-gate-filters {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .platform-gate-filters button {
+      min-height: 26px;
+      border-radius: var(--radius-pill);
+      font-size: 11px;
+      font-family: var(--font-mono);
+      padding: 0 10px;
+    }
+
+    .platform-gate-filters button.active {
+      border-color: color-mix(in srgb, var(--accent), transparent 32%);
+      background: color-mix(in srgb, var(--accent-soft), var(--bg-elev-3) 72%);
+      color: var(--text-primary);
+    }
+
+    .platform-gate-rollup {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+
+    .platform-gate-pill {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: color-mix(in srgb, var(--bg-elev-2), black 6%);
+    }
+
+    .platform-gate-pill.done {
+      border-color: color-mix(in srgb, var(--accent-ok), transparent 58%);
+      background: color-mix(in srgb, var(--accent-ok), transparent 92%);
+    }
+
+    .platform-gate-pill.failed {
+      border-color: color-mix(in srgb, var(--accent-danger), transparent 56%);
+      background: color-mix(in srgb, var(--accent-danger), transparent 92%);
+    }
+
+    .platform-gate-pill.pending {
+      border-color: color-mix(in srgb, var(--accent-warn), transparent 58%);
+      background: color-mix(in srgb, var(--accent-warn), transparent 92%);
+    }
+
+    .platform-gate-pill-main {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .platform-gate-pill-title {
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--text-primary);
+      line-height: 1.2;
+    }
+
+    .platform-gate-pill-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 200px;
+    }
+
+    .platform-gate-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 8px;
+    }
+
+    .platform-gate-card {
+      border: 1px solid color-mix(in srgb, var(--accent-ok), transparent 60%);
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--accent-ok), transparent 92%);
+      padding: 10px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .platform-gate-card.failed {
+      border-color: color-mix(in srgb, var(--accent-danger), transparent 56%);
+      background: color-mix(in srgb, var(--accent-danger), transparent 92%);
+    }
+
+    .platform-gate-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .platform-gate-title {
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--text-primary);
+      line-height: 1.2;
     }
 
     .pipeline-live-panel {
@@ -2042,6 +2559,55 @@ export class ForgeOpsApp extends LitElement {
       }
     }
 
+    .page-loading-shell {
+      position: relative;
+      min-height: 0;
+    }
+
+    .page-loading-content {
+      transition: opacity 240ms ease, transform 240ms ease, filter 240ms ease;
+    }
+
+    .page-loading-content.dim {
+      opacity: 0.46;
+      filter: saturate(0.84);
+      transform: translateY(2px);
+    }
+
+    .page-loading-content.ready {
+      opacity: 1;
+      filter: none;
+      transform: translateY(0);
+    }
+
+    .page-loading-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      border-radius: var(--radius-md);
+      padding: 2px;
+      background: color-mix(in srgb, var(--bg-primary), transparent 26%);
+      backdrop-filter: blur(1px);
+      transition: opacity 240ms ease, transform 240ms ease;
+      transform: translateY(4px);
+      opacity: 0;
+      pointer-events: none;
+      display: grid;
+      align-content: start;
+    }
+
+    .page-loading-overlay.visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .page-loading-overlay.hidden {
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+    }
+
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -2075,6 +2641,14 @@ export class ForgeOpsApp extends LitElement {
 
     .modal.agent-team-3d-modal {
       width: min(1300px, calc(100vw - 42px));
+      height: min(860px, calc(100vh - 42px));
+      max-height: calc(100vh - 42px);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .modal.token-usage-modal {
+      width: min(1200px, calc(100vw - 42px));
       height: min(860px, calc(100vh - 42px));
       max-height: calc(100vh - 42px);
       display: grid;
@@ -2245,6 +2819,10 @@ export class ForgeOpsApp extends LitElement {
     super.updated(changedProps);
     if (changedProps.has("selectedProjectId")) {
       this.writeStoredSelectedProjectId(this.selectedProjectId);
+      this.platformGateOnlyFailed = this.readStoredPlatformGateOnlyFailed(this.selectedProjectId);
+    }
+    if (changedProps.has("platformGateOnlyFailed")) {
+      this.writeStoredPlatformGateOnlyFailed(this.selectedProjectId, this.platformGateOnlyFailed);
     }
     if (changedProps.has("createProjectProgress") && this.showCreateProjectModal) {
       this.scrollCreateProjectProgressToBottom();
@@ -2292,6 +2870,33 @@ export class ForgeOpsApp extends LitElement {
       } else {
         window.localStorage.removeItem(SELECTED_PROJECT_STORAGE_KEY);
       }
+    } catch {}
+  }
+
+  private buildPlatformGateOnlyFailedStorageKey(projectId: string): string {
+    const normalized = String(projectId ?? "").trim();
+    return `${PLATFORM_GATE_ONLY_FAILED_STORAGE_KEY_PREFIX}${normalized}`;
+  }
+
+  private readStoredPlatformGateOnlyFailed(projectId: string): boolean {
+    const normalized = String(projectId ?? "").trim();
+    if (!normalized) return false;
+    try {
+      const raw = String(window.localStorage.getItem(this.buildPlatformGateOnlyFailedStorageKey(normalized)) ?? "").trim().toLowerCase();
+      return raw === "1" || raw === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  private writeStoredPlatformGateOnlyFailed(projectId: string, onlyFailed: boolean): void {
+    const normalized = String(projectId ?? "").trim();
+    if (!normalized) return;
+    try {
+      window.localStorage.setItem(
+        this.buildPlatformGateOnlyFailedStorageKey(normalized),
+        onlyFailed ? "1" : "0",
+      );
     } catch {}
   }
 
@@ -2359,6 +2964,18 @@ export class ForgeOpsApp extends LitElement {
     `;
   }
 
+  private renderProjectLoadingOverlay(
+    visible: boolean,
+    detail: string,
+    kind: "overview" | "issues" | "runs" | "workflow" | "scheduler",
+  ) {
+    return html`
+      <div class=${`page-loading-overlay ${visible ? "visible" : "hidden"}`} aria-hidden=${visible ? "false" : "true"}>
+        ${this.renderProjectLoadingHint(detail, this.renderProjectLoadingSkeleton(kind))}
+      </div>
+    `;
+  }
+
   private renderSkeletonLines(widths: number[]) {
     return widths.map((width) => html`<div class="skeleton-line" style=${`--skeleton-w:${Math.max(20, Math.min(100, width))}%;`}></div>`);
   }
@@ -2423,16 +3040,17 @@ export class ForgeOpsApp extends LitElement {
         this.refreshProjects(),
         this.refreshEngineState(),
         this.refreshSystemConfig(),
+        this.refreshGlobalTokenUsage(),
       ]);
       if (this.selectedProjectId) {
         const projectId = this.selectedProjectId;
         const loadToken = this.nextProjectLoadToken();
         this.projectDataLoading = true;
+        const metricsTask = this.refreshProjectMetrics(projectId, loadToken);
         try {
           await Promise.all([
             this.refreshIssues(projectId, loadToken),
             this.refreshRuns(projectId, loadToken),
-            this.refreshProjectMetrics(projectId, loadToken),
             this.refreshSchedulerConfig(projectId, loadToken),
             this.refreshWorkflowConfig(projectId, loadToken),
           ]);
@@ -2441,8 +3059,10 @@ export class ForgeOpsApp extends LitElement {
             this.projectDataLoading = false;
           }
         }
+        void metricsTask;
       } else {
         this.projectDataLoading = false;
+        this.projectMetricsLoading = false;
       }
       if (this.selectedRunId) {
         await this.refreshRunDetail();
@@ -2483,11 +3103,17 @@ export class ForgeOpsApp extends LitElement {
     const targetProjectId = String(projectId ?? "").trim();
     if (!targetProjectId) {
       this.projectMetrics = null;
+      this.projectMetricsLoading = false;
       return;
     }
     if (this.projects.length > 0 && !this.projects.some((project) => project.id === targetProjectId)) {
       this.projectMetrics = null;
+      this.projectMetricsLoading = false;
       return;
+    }
+    const trackLoading = this.isProjectLoadCurrent(targetProjectId, loadToken);
+    if (trackLoading) {
+      this.projectMetricsLoading = true;
     }
     try {
       const loaded = await getProjectMetrics(targetProjectId);
@@ -2496,6 +3122,10 @@ export class ForgeOpsApp extends LitElement {
     } catch {
       if (!this.isProjectLoadCurrent(targetProjectId, loadToken)) return;
       this.projectMetrics = null;
+    } finally {
+      if (this.isProjectLoadCurrent(targetProjectId, loadToken)) {
+        this.projectMetricsLoading = false;
+      }
     }
   }
 
@@ -2563,6 +3193,21 @@ export class ForgeOpsApp extends LitElement {
     this.doctor = this.systemConfig.doctor;
   }
 
+  private async refreshGlobalTokenUsage(): Promise<void> {
+    if (this.globalTokenUsageUnsupported) return;
+    try {
+      const loaded = await getGlobalTokenUsage();
+      if (!loaded) {
+        this.globalTokenUsage = null;
+        this.globalTokenUsageUnsupported = true;
+        return;
+      }
+      this.globalTokenUsage = loaded;
+    } catch {
+      this.globalTokenUsage = null;
+    }
+  }
+
   private async onApplyConcurrency(): Promise<void> {
     const value = Number(this.desiredConcurrency);
     if (!Number.isFinite(value) || value <= 0) {
@@ -2586,6 +3231,7 @@ export class ForgeOpsApp extends LitElement {
       void this.refreshRunDetail();
       void this.refreshRuns();
       void this.refreshProjectMetrics();
+      void this.refreshGlobalTokenUsage();
     });
     source.onerror = () => {
       this.message = "运行事件流已断开，正在后台自动重连。";
@@ -2970,11 +3616,26 @@ export class ForgeOpsApp extends LitElement {
     this.runTaskDraft = (ev.currentTarget as HTMLTextAreaElement).value;
   }
 
+  private onRunModeDraftChange(ev: Event): void {
+    const raw = String((ev.currentTarget as HTMLSelectElement).value ?? "").trim().toLowerCase();
+    if (raw === "quick") {
+      this.runModeDraft = raw;
+      return;
+    }
+    this.runModeDraft = "standard";
+  }
+
   private renderRunLaunchCard(options?: { showResume?: boolean }) {
     const showResume = options?.showResume !== false;
     const issueDraft = this.runIssueDraft || this.issues[0]?.id || "";
     const launchHealth = this.getRunLaunchHealth();
     const noIssues = this.issues.length === 0;
+    const selectedRun = this.runs.find((run) => run.id === this.selectedRunId) ?? null;
+    const selectedRunStatus = String(selectedRun?.status ?? "").trim().toLowerCase();
+    const canStopSelectedRun = selectedRunStatus === "running";
+    const canResumeSelectedRun = selectedRunStatus === "failed" || selectedRunStatus === "paused";
+    const canStopProjectRuns = this.runs.some((run) => String(run.status ?? "").trim().toLowerCase() === "running");
+    const canResumeProjectRuns = this.runs.some((run) => String(run.status ?? "").trim().toLowerCase() === "paused");
 
     return html`
       <form @submit=${this.onCreateRun}>
@@ -3008,6 +3669,21 @@ export class ForgeOpsApp extends LitElement {
             ></textarea>
           </label>
 
+          <label>
+            执行模式
+            <select
+              name="modeDraft"
+              .value=${this.runModeDraft}
+              @change=${this.onRunModeDraftChange}
+            >
+              <option value="standard">standard（默认，按项目 workflow）</option>
+              <option value="quick">quick（implement -> test -> cleanup）</option>
+            </select>
+          </label>
+          <div class="hint">
+            quick 适合小改动与快速验收；若项目 workflow 缺少 quick 关键 step，会自动回落 standard。
+          </div>
+
           <div class="run-launch-health">
             <div class="run-launch-health-grid">
               <span class="run-launch-health-item">
@@ -3033,7 +3709,10 @@ export class ForgeOpsApp extends LitElement {
             ? html`
                 <div class="run-launch-secondary">
                   <span class="hint">恢复旧运行请使用次级入口（不影响新 Run 启动流程）。</span>
-                  <button type="button" @click=${this.onResumeRun} ?disabled=${!this.selectedRunId}>恢复选中 Run</button>
+                  <button type="button" @click=${this.onStopRun} ?disabled=${!canStopSelectedRun}>停止选中 Run</button>
+                  <button type="button" @click=${this.onResumeRun} ?disabled=${!canResumeSelectedRun}>恢复选中 Run</button>
+                  <button type="button" @click=${this.onStopProjectRuns} ?disabled=${!canStopProjectRuns}>停止当前项目全部 Run</button>
+                  <button type="button" @click=${this.onResumeProjectRuns} ?disabled=${!canResumeProjectRuns}>恢复当前项目全部 Run</button>
                 </div>
               `
             : null}
@@ -3057,15 +3736,19 @@ export class ForgeOpsApp extends LitElement {
     }
     const taskDraft = String(data.get("taskDraft") ?? this.runTaskDraft).trim();
     const task = taskDraft || this.composeTaskFromIssue(issue);
+    const modeRaw = String(data.get("modeDraft") ?? this.runModeDraft).trim().toLowerCase();
+    const runMode = modeRaw === "quick" ? "quick" : "standard";
 
     const run = await createRun({
       projectId: this.selectedProjectId,
       issueId: issue.id,
       task,
+      runMode,
     });
 
     this.runIssueDraft = issue.id;
     this.runTaskDraft = task;
+    this.runModeDraft = runMode;
     await this.refreshRuns();
     await this.refreshProjectMetrics();
     this.selectedRunId = run.id;
@@ -3079,6 +3762,52 @@ export class ForgeOpsApp extends LitElement {
   private async onResumeRun(): Promise<void> {
     if (!this.selectedRunId) return;
     await resumeRun(this.selectedRunId);
+    await this.refreshRuns();
+    await this.refreshProjectMetrics();
+    await this.refreshRunDetail();
+  }
+
+  private async onStopRun(): Promise<void> {
+    if (!this.selectedRunId) return;
+    await stopRun(this.selectedRunId);
+    await this.refreshRuns();
+    await this.refreshProjectMetrics();
+    await this.refreshRunDetail();
+  }
+
+  private async onStopProjectRuns(): Promise<void> {
+    if (!this.selectedProjectId) return;
+    const result = await stopAllRuns(this.selectedProjectId);
+    this.message = `已停止当前项目运行：${result.changed}/${result.total}`;
+    this.messageTone = result.failed.length > 0 ? "error" : "success";
+    await this.refreshRuns();
+    await this.refreshProjectMetrics();
+    await this.refreshRunDetail();
+  }
+
+  private async onResumeProjectRuns(): Promise<void> {
+    if (!this.selectedProjectId) return;
+    const result = await resumeAllPausedRuns(this.selectedProjectId);
+    this.message = `已恢复当前项目运行：${result.changed}/${result.total}`;
+    this.messageTone = result.failed.length > 0 ? "error" : "success";
+    await this.refreshRuns();
+    await this.refreshProjectMetrics();
+    await this.refreshRunDetail();
+  }
+
+  private async onStopAllRunsGlobal(): Promise<void> {
+    const result = await stopAllRuns();
+    this.message = `已停止全局运行：${result.changed}/${result.total}`;
+    this.messageTone = result.failed.length > 0 ? "error" : "success";
+    await this.refreshRuns();
+    await this.refreshProjectMetrics();
+    await this.refreshRunDetail();
+  }
+
+  private async onResumeAllRunsGlobal(): Promise<void> {
+    const result = await resumeAllPausedRuns();
+    this.message = `已恢复全局运行：${result.changed}/${result.total}`;
+    this.messageTone = result.failed.length > 0 ? "error" : "success";
     await this.refreshRuns();
     await this.refreshProjectMetrics();
     await this.refreshRunDetail();
@@ -3124,11 +3853,13 @@ export class ForgeOpsApp extends LitElement {
     this.showAgentTeam3DModal = false;
     this.runTaskDraft = "";
     this.runIssueDraft = "";
+    this.runModeDraft = "standard";
     this.runDetail = null;
     this.pipelineSelectedStepKey = "";
     this.issues = [];
     this.runs = [];
     this.projectMetrics = null;
+    this.projectMetricsLoading = false;
     this.schedulerConfig = null;
     this.workflowConfig = null;
     this.workflowYamlDraft = "";
@@ -3139,11 +3870,11 @@ export class ForgeOpsApp extends LitElement {
     const loadToken = this.nextProjectLoadToken();
     this.projectDataLoading = true;
     void (async () => {
+      const metricsTask = this.refreshProjectMetrics(nextProjectId, loadToken);
       try {
         await Promise.all([
           this.refreshIssues(nextProjectId, loadToken),
           this.refreshRuns(nextProjectId, loadToken),
-          this.refreshProjectMetrics(nextProjectId, loadToken),
           this.refreshSchedulerConfig(nextProjectId, loadToken),
           this.refreshWorkflowConfig(nextProjectId, loadToken),
         ]);
@@ -3156,6 +3887,7 @@ export class ForgeOpsApp extends LitElement {
           this.projectDataLoading = false;
         }
       }
+      void metricsTask;
     })();
   }
 
@@ -3302,6 +4034,122 @@ export class ForgeOpsApp extends LitElement {
     this.message = "Issue Auto-Run Job 配置已保存。";
   }
 
+  private async onSaveSchedulerSkillPromotionCard(ev: SubmitEvent): Promise<void> {
+    ev.preventDefault();
+    if (!this.selectedProjectId) {
+      this.message = "请先选择项目。";
+      return;
+    }
+    const form = ev.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const enabled = String(data.get("skillEnabled") ?? "true") === "true";
+    const cron = String(data.get("skillCron") ?? "").trim();
+    const onlyWhenIdle = String(data.get("skillOnlyWhenIdle") ?? "true") === "true";
+    const draft = String(data.get("skillDraft") ?? "true") === "true";
+    const maxPromotionsRaw = Number(String(data.get("skillMaxPromotionsPerTick") ?? "1").trim());
+    const minOccurrencesRaw = Number(String(data.get("skillMinOccurrences") ?? "2").trim());
+    const lookbackDaysRaw = Number(String(data.get("skillLookbackDays") ?? "14").trim());
+    const minScoreRaw = Number(String(data.get("skillMinScore") ?? "0.6").trim());
+    const rolesRaw = String(data.get("skillRoles") ?? "");
+    const roles = rolesRaw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (!cron) {
+      this.message = "Skill Promotion 的 Cron 不能为空。";
+      return;
+    }
+    if (!Number.isFinite(maxPromotionsRaw) || maxPromotionsRaw < 1) {
+      this.message = "maxPromotionsPerTick 必须是大于等于 1 的整数。";
+      return;
+    }
+    if (!Number.isFinite(minOccurrencesRaw) || minOccurrencesRaw < 1) {
+      this.message = "minCandidateOccurrences 必须是大于等于 1 的整数。";
+      return;
+    }
+    if (!Number.isFinite(lookbackDaysRaw) || lookbackDaysRaw < 1) {
+      this.message = "lookbackDays 必须是大于等于 1 的整数。";
+      return;
+    }
+    if (!Number.isFinite(minScoreRaw) || minScoreRaw < 0 || minScoreRaw > 1) {
+      this.message = "minScore 必须在 0 到 1 之间。";
+      return;
+    }
+
+    this.schedulerConfig = await updateProjectSchedulerConfig(this.selectedProjectId, {
+      skillPromotion: {
+        enabled,
+        cron,
+        onlyWhenIdle,
+        maxPromotionsPerTick: Math.max(1, Math.floor(maxPromotionsRaw)),
+        minCandidateOccurrences: Math.max(1, Math.floor(minOccurrencesRaw)),
+        lookbackDays: Math.max(1, Math.floor(lookbackDaysRaw)),
+        minScore: Number(minScoreRaw.toFixed(3)),
+        draft,
+        roles,
+      },
+    });
+    await this.refreshEngineState();
+    this.message = "Skill Promotion Job 配置已保存。";
+  }
+
+  private async onSaveSchedulerGlobalSkillPromotionCard(ev: SubmitEvent): Promise<void> {
+    ev.preventDefault();
+    if (!this.selectedProjectId) {
+      this.message = "请先选择项目。";
+      return;
+    }
+    const form = ev.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const enabled = String(data.get("globalSkillEnabled") ?? "true") === "true";
+    const cron = String(data.get("globalSkillCron") ?? "").trim();
+    const onlyWhenIdle = String(data.get("globalSkillOnlyWhenIdle") ?? "true") === "true";
+    const draft = String(data.get("globalSkillDraft") ?? "true") === "true";
+    const requireProjectSkill = String(data.get("globalSkillRequireProjectSkill") ?? "true") === "true";
+    const maxPromotionsRaw = Number(String(data.get("globalSkillMaxPromotionsPerTick") ?? "1").trim());
+    const minOccurrencesRaw = Number(String(data.get("globalSkillMinOccurrences") ?? "3").trim());
+    const lookbackDaysRaw = Number(String(data.get("globalSkillLookbackDays") ?? "30").trim());
+    const minScoreRaw = Number(String(data.get("globalSkillMinScore") ?? "0.75").trim());
+
+    if (!cron) {
+      this.message = "Global Skill Promotion 的 Cron 不能为空。";
+      return;
+    }
+    if (!Number.isFinite(maxPromotionsRaw) || maxPromotionsRaw < 1) {
+      this.message = "maxPromotionsPerTick 必须是大于等于 1 的整数。";
+      return;
+    }
+    if (!Number.isFinite(minOccurrencesRaw) || minOccurrencesRaw < 1) {
+      this.message = "minCandidateOccurrences 必须是大于等于 1 的整数。";
+      return;
+    }
+    if (!Number.isFinite(lookbackDaysRaw) || lookbackDaysRaw < 1) {
+      this.message = "lookbackDays 必须是大于等于 1 的整数。";
+      return;
+    }
+    if (!Number.isFinite(minScoreRaw) || minScoreRaw < 0 || minScoreRaw > 1) {
+      this.message = "minScore 必须在 0 到 1 之间。";
+      return;
+    }
+
+    this.schedulerConfig = await updateProjectSchedulerConfig(this.selectedProjectId, {
+      globalSkillPromotion: {
+        enabled,
+        cron,
+        onlyWhenIdle,
+        maxPromotionsPerTick: Math.max(1, Math.floor(maxPromotionsRaw)),
+        minCandidateOccurrences: Math.max(1, Math.floor(minOccurrencesRaw)),
+        lookbackDays: Math.max(1, Math.floor(lookbackDaysRaw)),
+        minScore: Number(minScoreRaw.toFixed(3)),
+        requireProjectSkill,
+        draft,
+      },
+    });
+    await this.refreshEngineState();
+    this.message = "Global Skill Promotion Job 配置已保存。";
+  }
+
   private async onSaveWorkflow(ev: SubmitEvent): Promise<void> {
     ev.preventDefault();
     if (!this.selectedProjectId) {
@@ -3422,6 +4270,16 @@ export class ForgeOpsApp extends LitElement {
     this.showCreateProjectModal = false;
   }
 
+  private onOpenGlobalTokenUsageModal(): void {
+    this.globalTokenUsageUnsupported = false;
+    void this.refreshGlobalTokenUsage();
+    this.showGlobalTokenUsageModal = true;
+  }
+
+  private onCloseGlobalTokenUsageModal(): void {
+    this.showGlobalTokenUsageModal = false;
+  }
+
   private onOpenPipelineFullscreen(source: "project" | "run"): void {
     this.pipelineFullscreenSource = source;
   }
@@ -3478,6 +4336,7 @@ export class ForgeOpsApp extends LitElement {
   private normalizeRunStatus(status: string): "running" | "failed" | "completed" | "pending" {
     const key = String(status ?? "").trim().toLowerCase();
     if (key === "running" || key === "resuming" || key === "retry") return "running";
+    if (key === "paused") return "pending";
     if (key === "failed" || key === "error" || key === "aborted") return "failed";
     if (key === "completed" || key === "done" || key === "success") return "completed";
     return "pending";
@@ -3606,6 +4465,257 @@ export class ForgeOpsApp extends LitElement {
     return this.runDetail.steps.find((step) => step.id === stepId) ?? null;
   }
 
+  private eventPayloadAsRecord(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return {};
+    }
+    return payload as Record<string, unknown>;
+  }
+
+  private toEventStringList(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+    }
+    const text = String(value ?? "").trim();
+    return text ? [text] : [];
+  }
+
+  private toEventBoolean(value: unknown, fallback = false): boolean {
+    if (typeof value === "boolean") return value;
+    const text = String(value ?? "").trim().toLowerCase();
+    if (!text) return fallback;
+    if (["1", "true", "yes", "ok", "pass", "passed"].includes(text)) return true;
+    if (["0", "false", "no", "fail", "failed"].includes(text)) return false;
+    return fallback;
+  }
+
+  private toEventInt(value: unknown, fallback = 0): number {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(0, Math.floor(num));
+  }
+
+  private collectRuntimeRiskSignals(detail: RunDetail): RuntimeRiskSignalRow[] {
+    const stepKeyById = new Map(detail.steps.map((step) => [step.id, step.step_key]));
+    const out: RuntimeRiskSignalRow[] = [];
+    for (const event of detail.events) {
+      const eventType = String(event.event_type ?? "").trim();
+      if (eventType !== "runtime.session.risk" && eventType !== "runtime.session.rotate.recommended") {
+        continue;
+      }
+      const payload = this.eventPayloadAsRecord(event.payload);
+      const stepId = String(payload.stepId ?? event.step_id ?? "").trim();
+      const stepKeyFromPayload = String(payload.stepKey ?? "").trim();
+      const stepKey = stepKeyFromPayload || (stepId ? String(stepKeyById.get(stepId) ?? "").trim() : "");
+      out.push({
+        id: Number(event.id ?? 0),
+        ts: String(event.ts ?? ""),
+        eventType: eventType as RuntimeRiskSignalRow["eventType"],
+        severity: eventType === "runtime.session.rotate.recommended" ? "rotate" : "risk",
+        stepId,
+        stepKey,
+        threadId: String(payload.threadId ?? "").trim(),
+        turnId: String(payload.turnId ?? "").trim(),
+        reason: String(payload.reason ?? "").trim(),
+        recommendedAction: String(payload.recommendedAction ?? "").trim(),
+        evidence: this.toEventStringList(payload.evidence),
+      });
+    }
+
+    return out.sort((left, right) => right.id - left.id);
+  }
+
+  private collectPlatformGateSignals(detail: RunDetail): PlatformGateSignalRow[] {
+    const stepKeyById = new Map(detail.steps.map((step) => [step.id, step.step_key]));
+    const out: PlatformGateSignalRow[] = [];
+    for (const event of detail.events) {
+      const eventType = String(event.event_type ?? "").trim();
+      if (eventType !== "platform.gate.checked" && eventType !== "platform.gate.failed") {
+        continue;
+      }
+      const payload = this.eventPayloadAsRecord(event.payload);
+      const stepId = String(payload.stepId ?? event.step_id ?? "").trim();
+      const stepKeyFromPayload = String(payload.stepKey ?? "").trim();
+      const stepKey = stepKeyFromPayload || (stepId ? String(stepKeyById.get(stepId) ?? "").trim() : "");
+      const ok = eventType === "platform.gate.failed"
+        ? false
+        : this.toEventBoolean(payload.ok, false);
+      out.push({
+        id: Number(event.id ?? 0),
+        ts: String(event.ts ?? ""),
+        eventType: eventType as PlatformGateSignalRow["eventType"],
+        stepId,
+        stepKey,
+        gate: String(payload.gate ?? "").trim(),
+        ok,
+        productType: String(payload.productType ?? "").trim(),
+        scriptPath: String(payload.scriptPath ?? "").trim(),
+        failedRequiredCount: this.toEventInt(payload.failedRequiredCount, 0),
+        reason: String(payload.reason ?? "").trim(),
+        error: String(payload.error ?? "").trim(),
+        stderr: String(payload.stderr ?? "").trim(),
+      });
+    }
+    return out.sort((left, right) => right.id - left.id);
+  }
+
+  private renderRuntimeRiskSignals(detail: RunDetail) {
+    const signals = this.collectRuntimeRiskSignals(detail);
+    const riskCount = signals.filter((item) => item.severity === "risk").length;
+    const rotateCount = signals.filter((item) => item.severity === "rotate").length;
+    const uniqueSteps = new Set(signals.map((item) => item.stepKey || item.stepId).filter(Boolean)).size;
+    const visibleSignals = signals.slice(0, 6);
+    return html`
+      <div class="runtime-risk-summary">
+        <span class="tag">risk=${riskCount} · rotate_recommended=${rotateCount} · steps=${uniqueSteps}</span>
+        <span class="hint">长会话风险信号（最近 ${visibleSignals.length} 条）</span>
+      </div>
+      ${visibleSignals.length === 0
+        ? html`<div class="hint">暂无长会话风险信号。</div>`
+        : html`
+            <div class="runtime-risk-grid">
+              ${visibleSignals.map((signal) => {
+                const severityStatus = signal.severity === "rotate" ? "failed" : "pending";
+                const signalTitle = signal.severity === "rotate" ? "建议切新线程" : "会话风险";
+                const stepLabel = signal.stepKey || signal.stepId || "-";
+                return html`
+                  <div class=${`runtime-risk-card ${signal.severity === "rotate" ? "rotate" : ""}`}>
+                    <div class="runtime-risk-head">
+                      <div class="runtime-risk-title">${signalTitle} · step=${stepLabel}</div>
+                      <status-dot status=${severityStatus}></status-dot>
+                    </div>
+                    <div class="mono">${signal.ts}</div>
+                    <div class="mono">thread=${signal.threadId || "-"} turn=${signal.turnId || "-"}</div>
+                    ${signal.reason ? html`<div class="mono">reason=${signal.reason}</div>` : null}
+                    ${signal.recommendedAction ? html`<div class="hint">建议：${signal.recommendedAction}</div>` : null}
+                    ${signal.evidence.length > 0
+                      ? html`<div class="mono">evidence=${signal.evidence.slice(0, 3).join(" | ")}</div>`
+                      : null}
+                  </div>
+                `;
+              })}
+            </div>
+          `}
+    `;
+  }
+
+  private renderPlatformGateSignals(detail: RunDetail) {
+    const signals = this.collectPlatformGateSignals(detail);
+    const displayedSignals = this.platformGateOnlyFailed
+      ? signals.filter((item) => item.eventType === "platform.gate.failed")
+      : signals;
+    const checkedCount = signals.filter((item) => item.eventType === "platform.gate.checked").length;
+    const failedCount = signals.filter((item) => item.eventType === "platform.gate.failed").length;
+    const uniqueGates = new Set(signals.map((item) => item.gate).filter(Boolean)).size;
+    const visibleSignals = displayedSignals.slice(0, 6);
+    const rollup = this.buildPlatformGateRollup(signals);
+    return html`
+      <div class="platform-gate-summary">
+        <span class="tag">checked=${checkedCount} · failed=${failedCount} · gates=${uniqueGates}</span>
+        <div class="platform-gate-filters">
+          <button
+            type="button"
+            class=${this.platformGateOnlyFailed ? "" : "active"}
+            @click=${() => { this.platformGateOnlyFailed = false; }}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            class=${this.platformGateOnlyFailed ? "active" : ""}
+            @click=${() => { this.platformGateOnlyFailed = true; }}
+            ?disabled=${failedCount === 0}
+          >
+            仅失败
+          </button>
+          <span class="hint">最近 ${visibleSignals.length} 条</span>
+        </div>
+      </div>
+      ${rollup.length > 0
+        ? html`
+            <div class="platform-gate-rollup">
+              ${rollup.map((item) => html`
+                <div class=${`platform-gate-pill ${item.status}`}>
+                  <div class="platform-gate-pill-main">
+                    <div class="platform-gate-pill-title">${item.gate} · ${item.statusText}</div>
+                    <div class="platform-gate-pill-meta">step=${item.stepLabel || "-"} · ${item.latestTs || "-"}</div>
+                  </div>
+                  <status-dot status=${item.status}></status-dot>
+                </div>
+              `)}
+            </div>
+          `
+        : null}
+      ${visibleSignals.length === 0
+        ? html`<div class="hint">${this.platformGateOnlyFailed ? "暂无失败的闸门事件。" : "暂无平台闸门事件。"}</div>`
+        : html`
+            <div class="platform-gate-grid">
+              ${visibleSignals.map((signal) => {
+                const status = signal.ok ? "done" : "failed";
+                const signalTitle = signal.ok ? "平台闸门通过" : "平台闸门失败";
+                const gateLabel = signal.gate || "-";
+                const stepLabel = signal.stepKey || signal.stepId || "-";
+                return html`
+                  <div class=${`platform-gate-card ${signal.ok ? "" : "failed"}`}>
+                    <div class="platform-gate-head">
+                      <div class="platform-gate-title">${signalTitle} · gate=${gateLabel} · step=${stepLabel}</div>
+                      <status-dot status=${status}></status-dot>
+                    </div>
+                    <div class="mono">${signal.ts}</div>
+                    ${signal.productType ? html`<div class="mono">product_type=${signal.productType}</div>` : null}
+                    ${signal.scriptPath ? html`<div class="mono">script=${signal.scriptPath}</div>` : null}
+                    ${signal.failedRequiredCount > 0
+                      ? html`<div class="mono">failed_required=${signal.failedRequiredCount}</div>`
+                      : null}
+                    ${signal.reason ? html`<div class="mono">reason=${signal.reason}</div>` : null}
+                    ${signal.error ? html`<div class="error">${signal.error}</div>` : null}
+                    ${signal.stderr ? html`<div class="mono">stderr=${signal.stderr.slice(0, 220)}</div>` : null}
+                  </div>
+                `;
+              })}
+            </div>
+          `}
+    `;
+  }
+
+  private buildPlatformGateRollup(signals: PlatformGateSignalRow[]): PlatformGateRollupRow[] {
+    if (signals.length === 0) return [];
+    const preferredGateOrder = ["preflight", "smoke"];
+    const latestByGate = new Map<string, PlatformGateSignalRow>();
+    for (const signal of signals) {
+      const key = signal.gate || "unknown";
+      if (!latestByGate.has(key)) {
+        latestByGate.set(key, signal);
+      }
+    }
+
+    const gateKeys = [
+      ...preferredGateOrder.filter((item) => latestByGate.has(item)),
+      ...Array.from(latestByGate.keys()).filter((item) => !preferredGateOrder.includes(item)),
+    ];
+
+    return gateKeys.map((gate) => {
+      const latest = latestByGate.get(gate);
+      const status: PlatformGateRollupRow["status"] = latest
+        ? (latest.ok ? "done" : "failed")
+        : "pending";
+      const statusText = status === "done"
+        ? "通过"
+        : status === "failed"
+          ? "失败"
+          : "待执行";
+      return {
+        gate,
+        status,
+        statusText,
+        latestEventId: Number(latest?.id ?? 0),
+        latestTs: String(latest?.ts ?? ""),
+        stepLabel: String(latest?.stepKey ?? latest?.stepId ?? ""),
+        reason: String(latest?.reason ?? ""),
+      };
+    });
+  }
+
   private calcDurationMs(startedAt: string | null, endedAt: string | null): number {
     if (!startedAt) return 0;
     const start = Date.parse(startedAt);
@@ -3627,6 +4737,54 @@ export class ForgeOpsApp extends LitElement {
 
   private formatNumber(n: number): string {
     return Number(n || 0).toLocaleString("en-US");
+  }
+
+  private formatTokenCompact(n: number): string {
+    const value = Number(n || 0);
+    if (!Number.isFinite(value)) return "-";
+    const abs = Math.abs(value);
+    const sign = value < 0 ? "-" : "";
+    const units = [
+      { unit: "T", value: 1_000_000_000_000 },
+      { unit: "B", value: 1_000_000_000 },
+      { unit: "M", value: 1_000_000 },
+      { unit: "K", value: 1_000 },
+    ];
+    for (const item of units) {
+      if (abs < item.value) continue;
+      const scaled = abs / item.value;
+      const digits = scaled >= 100 ? 0 : (scaled >= 10 ? 1 : 2);
+      return `${sign}${scaled.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1")}${item.unit}`;
+    }
+    return `${sign}${Math.round(abs)}`;
+  }
+
+  private formatTokenWithRaw(n: number): string {
+    return `${this.formatTokenCompact(n)} (${this.formatNumber(n)} tokens)`;
+  }
+
+  private tokenMetricColor(key: string, index: number): string {
+    const palette = [
+      "#22c55e",
+      "#3b82f6",
+      "#f59e0b",
+      "#a855f7",
+      "#14b8a6",
+      "#ef4444",
+      "#84cc16",
+      "#06b6d4",
+    ];
+    const text = String(key ?? "").trim();
+    if (!text) return palette[index % palette.length];
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return palette[Math.abs(hash) % palette.length];
+  }
+
+  private tokenRuntimeColor(runtime: string, index: number): string {
+    return this.tokenMetricColor(runtime, index);
   }
 
   private formatCompactTrendNumber(n: number, options?: { signed?: boolean }): string {
@@ -4083,6 +5241,8 @@ export class ForgeOpsApp extends LitElement {
           <span class="value">${latestSession?.id ?? "-"}</span>
         </div>
       </div>
+      ${this.renderRuntimeRiskSignals(this.runDetail)}
+      ${this.renderPlatformGateSignals(this.runDetail)}
       <div class="run-inspector-tabs">
         <button
           type="button"
@@ -4102,6 +5262,244 @@ export class ForgeOpsApp extends LitElement {
       </div>
       <div class="hint">说明：Step 是业务节点；Session 是执行实例（同一 Step 可能因重试/恢复产生多个 Session）。</div>
       ${this.runtimeFocusTab === "session" ? this.renderRuntimeSessionList() : this.renderRuntimeStepList()}
+    `;
+  }
+
+  private renderGlobalTokenUsageCard() {
+    const globalTokenUsage = this.globalTokenUsage;
+    const globalTokenTrend = globalTokenUsage?.trend_7d ?? null;
+    const globalTokenTrendRows = Array.isArray(globalTokenTrend?.days) ? globalTokenTrend.days : [];
+    const projectRowsRaw = Array.isArray(globalTokenUsage?.project_totals)
+      ? globalTokenUsage.project_totals
+      : [];
+    const projectRows = projectRowsRaw
+      .map((row) => ({
+        key: String(row.project_id ?? row.project_name ?? "").trim(),
+        name: String(row.project_name ?? row.project_id ?? "").trim() || "unknown-project",
+        total: Number(row.total_tokens ?? 0),
+      }))
+      .filter((row) => row.total > 0)
+      .sort((a, b) => b.total - a.total);
+    const pieSourceRows = (() => {
+      const topRows = projectRows.slice(0, 5);
+      const otherTotal = projectRows.slice(5).reduce((sum, row) => sum + row.total, 0);
+      if (otherTotal > 0) {
+        topRows.push({
+          key: "other-projects",
+          name: "Other Projects",
+          total: otherTotal,
+        });
+      }
+      return topRows;
+    })();
+    const pieTotal = pieSourceRows.reduce((sum, row) => sum + row.total, 0);
+    const pieRows = pieSourceRows.map((row, index) => {
+      const color = this.tokenMetricColor(row.key, index);
+      const shareRate = pieTotal > 0 ? (row.total / pieTotal) * 100 : 0;
+      return {
+        ...row,
+        color,
+        shareRate,
+      };
+    });
+    const pieGradient = (() => {
+      if (pieRows.length === 0) {
+        return "conic-gradient(#3b82f6 0turn, #3b82f6 1turn)";
+      }
+      let cursor = 0;
+      const parts = [];
+      for (const row of pieRows) {
+        const next = cursor + row.shareRate;
+        parts.push(`${row.color} ${cursor.toFixed(3)}% ${Math.min(100, next).toFixed(3)}%`);
+        cursor = next;
+      }
+      if (cursor < 100) {
+        const lastColor = pieRows[pieRows.length - 1].color;
+        parts.push(`${lastColor} ${cursor.toFixed(3)}% 100%`);
+      }
+      return `conic-gradient(${parts.join(", ")})`;
+    })();
+
+    const chartWidth = 720;
+    const chartHeight = 240;
+    const paddingLeft = 40;
+    const paddingRight = 14;
+    const paddingTop = 12;
+    const paddingBottom = 28;
+    const plotWidth = chartWidth - paddingLeft - paddingRight;
+    const plotHeight = chartHeight - paddingTop - paddingBottom;
+    const trendMax = Math.max(1, ...globalTokenTrendRows.map((row) => Number(row.total_tokens ?? 0)));
+    const chartPoints = globalTokenTrendRows.map((row, index) => {
+      const value = Number(row.total_tokens ?? 0);
+      const ratio = trendMax > 0 ? value / trendMax : 0;
+      const x = globalTokenTrendRows.length <= 1
+        ? paddingLeft + (plotWidth / 2)
+        : paddingLeft + (plotWidth * (index / (globalTokenTrendRows.length - 1)));
+      const y = paddingTop + ((1 - ratio) * plotHeight);
+      return {
+        date: String(row.date ?? ""),
+        value,
+        x,
+        y,
+      };
+    });
+    const linePath = chartPoints.length > 0
+      ? chartPoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ")
+      : "";
+    const areaPath = chartPoints.length > 0
+      ? `M ${chartPoints[0].x.toFixed(2)} ${(chartHeight - paddingBottom).toFixed(2)} `
+        + chartPoints.map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ")
+        + ` L ${chartPoints[chartPoints.length - 1].x.toFixed(2)} ${(chartHeight - paddingBottom).toFixed(2)} Z`
+      : "";
+    const yAxisTicks = [1, 0.5, 0].map((ratio) => {
+      const y = paddingTop + ((1 - ratio) * plotHeight);
+      return {
+        y,
+        label: this.formatTokenCompact(Math.round(trendMax * ratio)),
+      };
+    });
+    const latestTrendValue = chartPoints.length > 0 ? chartPoints[chartPoints.length - 1].value : 0;
+
+    return html`
+      <div class="system-token-card">
+        <div class="system-token-header">
+          <span class="tag">collected_at=${globalTokenUsage?.collected_at ?? "-"}</span>
+          <span class="token-unit-summary">units=tokens · 1K=1,000 · 1M=1,000,000 · 1B=1,000,000,000 · 1T=1,000,000,000,000</span>
+        </div>
+        ${globalTokenUsage
+          ? html`
+              <div class="metrics">
+                <div class="metric">
+                  <span class="label">Token 总量</span>
+                  <span class="value">${this.formatTokenCompact(globalTokenUsage.total_tokens)}</span>
+                  <span class="mono">${this.formatTokenWithRaw(globalTokenUsage.total_tokens)}</span>
+                </div>
+                <div class="metric">
+                  <span class="label">输入 / 缓存 / 输出</span>
+                  <span class="value">${this.formatTokenCompact(globalTokenUsage.token_input_total)} / ${this.formatTokenCompact(globalTokenUsage.token_cached_input_total)} / ${this.formatTokenCompact(globalTokenUsage.token_output_total)}</span>
+                  <span class="mono">in=${this.formatNumber(globalTokenUsage.token_input_total)} · cached=${this.formatNumber(globalTokenUsage.token_cached_input_total)} · out=${this.formatNumber(globalTokenUsage.token_output_total)}</span>
+                </div>
+                <div class="metric">
+                  <span class="label">缓存命中率</span>
+                  <span class="value">${this.formatPercent(globalTokenUsage.token_cache_hit_rate)}</span>
+                  <span class="mono">prompt_total=${this.formatTokenCompact(globalTokenUsage.token_input_total + globalTokenUsage.token_cached_input_total)}</span>
+                </div>
+              </div>
+              <div class="token-chart-grid">
+                <div class="token-chart-card">
+                  <div class="token-chart-head">
+                    <span>项目 Token 消耗占比</span>
+                    <span class="tag">${pieRows.length} slices</span>
+                  </div>
+                  ${pieRows.length === 0
+                    ? html`<div class="hint">暂无项目 Token 消耗数据。</div>`
+                    : html`
+                        <div class="token-pie-layout">
+                          <div class="token-pie" style=${`--token-pie-gradient:${pieGradient};`}>
+                            <div class="token-pie-center">
+                              <span class="value">${this.formatTokenCompact(pieTotal)}</span>
+                              <span class="label">project total</span>
+                            </div>
+                          </div>
+                          <div class="token-legend">
+                            ${pieRows.map((row) => html`
+                              <div class="token-legend-row">
+                                <div class="token-legend-main">
+                                  <span class="token-legend-dot" style=${`--dot-color:${row.color};`}></span>
+                                  <span class="token-legend-name">${row.name}</span>
+                                </div>
+                                <span class="token-legend-value">${this.formatTokenCompact(row.total)} · ${this.formatPercent(row.shareRate)}</span>
+                              </div>
+                            `)}
+                          </div>
+                        </div>
+                      `}
+                </div>
+                <div class="token-chart-card">
+                  <div class="token-chart-head">
+                    <span>全局 7 日 Token 趋势（时序曲线）</span>
+                    <span class="tag">latest=${this.formatTokenCompact(latestTrendValue)}</span>
+                  </div>
+                  ${globalTokenTrend && globalTokenTrend.available && chartPoints.length > 0
+                    ? html`
+                        <div class="token-line-wrap">
+                          <svg class="token-line-svg" viewBox=${`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" aria-label="Global token trend line">
+                            ${yAxisTicks.map((tick) => html`
+                              <line
+                                x1=${paddingLeft}
+                                y1=${tick.y}
+                                x2=${chartWidth - paddingRight}
+                                y2=${tick.y}
+                                stroke="color-mix(in srgb, var(--border-subtle), transparent 22%)"
+                                stroke-width="1"
+                              ></line>
+                              <text
+                                x=${paddingLeft - 6}
+                                y=${tick.y - 2}
+                                fill="var(--text-soft)"
+                                font-size="10"
+                                font-family="var(--font-mono)"
+                                text-anchor="end"
+                              >${tick.label}</text>
+                            `)}
+                            <line
+                              x1=${paddingLeft}
+                              y1=${paddingTop}
+                              x2=${paddingLeft}
+                              y2=${chartHeight - paddingBottom}
+                              stroke="color-mix(in srgb, var(--border-subtle), transparent 18%)"
+                              stroke-width="1"
+                            ></line>
+                            <line
+                              x1=${paddingLeft}
+                              y1=${chartHeight - paddingBottom}
+                              x2=${chartWidth - paddingRight}
+                              y2=${chartHeight - paddingBottom}
+                              stroke="color-mix(in srgb, var(--border-subtle), transparent 18%)"
+                              stroke-width="1"
+                            ></line>
+                            <path
+                              d=${areaPath}
+                              fill="color-mix(in srgb, var(--accent), transparent 86%)"
+                              stroke="none"
+                            ></path>
+                            <path
+                              d=${linePath}
+                              fill="none"
+                              stroke="var(--accent)"
+                              stroke-width="2.2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            ></path>
+                            ${chartPoints.map((point) => html`
+                              <circle
+                                cx=${point.x}
+                                cy=${point.y}
+                                r="3"
+                                fill="var(--accent)"
+                                stroke="color-mix(in srgb, var(--bg-elev-2), black 12%)"
+                                stroke-width="1"
+                              ></circle>
+                            `)}
+                          </svg>
+                          <div class="token-line-axis-labels">
+                            ${chartPoints.map((point) => html`<span>${point.date.slice(5)}</span>`)}
+                          </div>
+                        </div>
+                        <div class="trend-summary">
+                          <span class="trend-summary-item">source=${globalTokenTrend.source}</span>
+                          <span class="trend-summary-item">peak=${this.formatTokenCompact(trendMax)}</span>
+                          <span class="trend-summary-item">latest=${this.formatTokenCompact(latestTrendValue)}</span>
+                        </div>
+                      `
+                    : html`<div class="hint">7 日趋势暂无可用数据。${globalTokenTrend?.warning ? `原因：${globalTokenTrend.warning}` : ""}</div>`}
+                </div>
+              </div>
+            `
+          : this.globalTokenUsageUnsupported
+            ? html`<div class="hint">当前服务端版本暂不支持全局 Token API（/api/system/token-usage）。请重启到最新 ForgeOps 服务后启用。</div>`
+            : html`<div class="hint">正在加载全局 Token 指标…</div>`}
+      </div>
     `;
   }
 
@@ -4427,6 +5825,8 @@ export class ForgeOpsApp extends LitElement {
               }}
             />
             <button type="button" @click=${this.onApplyConcurrency}>应用并发槽位</button>
+            <button type="button" @click=${this.onStopAllRunsGlobal}>停止全部运行</button>
+            <button type="button" @click=${this.onResumeAllRunsGlobal}>恢复全部暂停</button>
           </div>
         </div>
 
@@ -4774,19 +6174,7 @@ export class ForgeOpsApp extends LitElement {
         </div>
       `;
     }
-    if (this.projectDataLoading && !this.projectMetrics && this.issues.length === 0 && this.runs.length === 0) {
-      return html`
-        <div class="panel">
-          <div class="panel-header"><span>项目概览</span></div>
-          <div class="panel-body">
-            ${this.renderProjectLoadingHint(
-              `正在切换到「${selectedProject.name}」，加载概览数据中…`,
-              this.renderProjectLoadingSkeleton("overview"),
-            )}
-          </div>
-        </div>
-      `;
-    }
+    const showLoading = this.projectDataLoading && this.issues.length === 0 && this.runs.length === 0;
     const projectRuns = this.runs.filter((run) => run.project_id === selectedProject.id);
     const runningCount = projectRuns.filter((run) => run.status === "running").length;
     const failedCount = projectRuns.filter((run) => run.status === "failed").length;
@@ -4903,8 +6291,9 @@ export class ForgeOpsApp extends LitElement {
           <span>项目概览</span>
           <span class="tag">${selectedProject.name}</span>
         </div>
-        <div class="panel-body">
-          <details class="row overview-project-card">
+        <div class="panel-body page-loading-shell">
+          <div class=${`page-loading-content ${showLoading ? "dim" : "ready"}`}>
+            <details class="row overview-project-card">
             <summary>
               <div class="overview-project-summary-head">
                 <div class="title">${selectedProject.name}</div>
@@ -4945,10 +6334,10 @@ export class ForgeOpsApp extends LitElement {
               ${metrics
                 ? html`<div class="mono">metrics@${metrics.loc_scanned_at} (${metrics.loc_source}) · github@${metrics.github_fetched_at}</div>`
                 : null}
-            </div>
-          </details>
-          <div class="overview-grid">
-            <div class="metric metric-block">
+              </div>
+            </details>
+            <div class="overview-grid">
+              <div class="metric metric-block">
               <div class="metric-block-header">
                 <span class="metric-block-title">GitHub 工作项</span>
                 <div class="segmented">
@@ -4982,9 +6371,9 @@ export class ForgeOpsApp extends LitElement {
                 `all=${prCounts.all} · open=${prCounts.open} · closed=${prCounts.closed}`
               )}
               <span class="mono">${effectiveRepo ? `repo=${effectiveRepo}` : "repo=未绑定"} · source=${metrics?.github_source ?? "none"}</span>
-            </div>
+              </div>
 
-            <div class="metric metric-block">
+              <div class="metric metric-block">
               <span class="metric-block-title">上下文资产</span>
               <div class="metric-kv">
                 <span class="label">代码行数</span>
@@ -5047,9 +6436,9 @@ export class ForgeOpsApp extends LitElement {
                     `
                   : null}
               </div>
-            </div>
+              </div>
 
-            <div class="metric metric-block">
+              <div class="metric metric-block">
               <span class="metric-block-title">运行与节奏</span>
               <div class="metric-kv">
                 <span class="label">Runs</span>
@@ -5101,14 +6490,23 @@ export class ForgeOpsApp extends LitElement {
                       <div class="hint">7 日趋势暂无可用数据。${trend?.warning ? `原因：${trend.warning}` : ""}</div>
                     `}
               </div>
+              </div>
             </div>
+            ${metrics?.github_warning
+              ? html`<div class="hint">GitHub 指标告警：${metrics.github_warning}</div>`
+              : null}
+            ${this.projectMetricsLoading
+              ? html`<div class="hint">概览指标计算中，先展示基础数据…</div>`
+              : null}
+            ${this.renderProjectAgentTeam()}
+            ${this.renderProjectRunningPipelines()}
+            <div class="hint">建议从「需求管理」创建 GitHub Issue，再到「运行实况」启动并追踪 Run。</div>
           </div>
-          ${metrics?.github_warning
-            ? html`<div class="hint">GitHub 指标告警：${metrics.github_warning}</div>`
-            : null}
-          ${this.renderProjectAgentTeam()}
-          ${this.renderProjectRunningPipelines()}
-          <div class="hint">建议从「需求管理」创建 GitHub Issue，再到「运行实况」启动并追踪 Run。</div>
+          ${this.renderProjectLoadingOverlay(
+            showLoading,
+            `正在切换到「${selectedProject.name}」，加载概览数据中…`,
+            "overview",
+          )}
         </div>
       </div>
     `;
@@ -5125,72 +6523,187 @@ export class ForgeOpsApp extends LitElement {
         </div>
       `;
     }
-    if (this.projectDataLoading && this.issues.length === 0) {
-      return html`
-        <div class="panel">
-          <div class="panel-header"><span>需求管理</span></div>
-          <div class="panel-body">
-            ${this.renderProjectLoadingHint(
-              "正在加载该项目的 GitHub Issue 列表…",
-              this.renderProjectLoadingSkeleton("issues"),
-            )}
-          </div>
-        </div>
-      `;
-    }
+    const showLoading = this.projectDataLoading && this.issues.length === 0;
+    const issueGroups = this.buildIssueStatusGroups(this.issues);
     return html`
       <div class="panel">
         <div class="panel-header">
           <span>需求管理</span>
           <span class="tag">${this.issues.length} issues</span>
         </div>
-        <div class="panel-body">
-          <form @submit=${this.onCreateIssue}>
-            <label>
-              GitHub Issue 标题
-              <input name="title" placeholder="新增 OAuth 登录流程" required />
-            </label>
-            <label>
-              GitHub Issue 描述
-              <textarea name="description" placeholder="结构化需求：背景、目标、验收标准、风险"></textarea>
-            </label>
-            <button class="primary" type="submit">创建 GitHub Issue</button>
-          </form>
-          <div class="panel-header"><span>GitHub Issue 列表</span></div>
-          <div class="events">
-            ${this.issues.length === 0
-              ? html`<div class="hint">当前项目还没有 GitHub Issue。</div>`
-              : this.issues.map((issue) => {
-                  const runSummary = this.getIssueRunSummary(issue.id);
-                  return html`
-                    <div class="row">
-                      <div class="title">${issue.title}</div>
-                      <div class="mono">#${issue.id}</div>
-                      <div class="mono">status=${issue.status} · updated=${issue.updated_at}</div>
-                      ${runSummary.total > 0
-                        ? html`<div class="mono">runs=${runSummary.total} · running=${runSummary.running} · target=${runSummary.target?.id ?? "-"}</div>`
-                        : null}
-                      ${Array.isArray(issue.labels) && issue.labels.length > 0
-                        ? html`<div class="mono">labels=${issue.labels.join(", ")}</div>`
-                        : null}
-                      ${issue.github_url
-                        ? html`<div class="mono"><a href=${issue.github_url} target="_blank" rel="noreferrer">open in GitHub</a></div>`
-                        : null}
-                      ${issue.description ? html`<div class="mono">${issue.description}</div>` : null}
-                      ${runSummary.target
-                        ? html`
-                            <div class="button-row">
-                              <button type="button" @click=${() => this.onOpenRunFromIssue(issue.id)}>
-                                ${runSummary.running > 0 ? "查看运行中 Run" : "查看最近 Run"}
-                              </button>
+        <div class="panel-body page-loading-shell">
+          <div class=${`page-loading-content ${showLoading ? "dim" : "ready"}`}>
+            <form @submit=${this.onCreateIssue}>
+              <label>
+                GitHub Issue 标题
+                <input name="title" placeholder="新增 OAuth 登录流程" required />
+              </label>
+              <label>
+                GitHub Issue 描述
+                <textarea name="description" placeholder="结构化需求：背景、目标、验收标准、风险"></textarea>
+              </label>
+              <button class="primary" type="submit">创建 GitHub Issue</button>
+            </form>
+            <div class="panel-header"><span>GitHub Issue 列表</span></div>
+            <div class="events">
+              ${this.issues.length === 0
+                ? html`<div class="hint">当前项目还没有 GitHub Issue。</div>`
+                : html`
+                    <div class="run-group-list">
+                      ${issueGroups.map((group) => html`
+                        <details class="run-group" ?open=${group.openByDefault}>
+                          <summary>
+                            <span>${group.title}</span>
+                            <span class="tag">${group.rows.length}</span>
+                          </summary>
+                          <div class="run-group-body">
+                            <div class="events">
+                              ${group.rows.map((issue) => this.renderIssueCard(issue))}
                             </div>
-                          `
-                        : null}
+                          </div>
+                        </details>
+                      `)}
                     </div>
-                  `;
-                })}
+                  `}
+            </div>
+          </div>
+          ${this.renderProjectLoadingOverlay(
+            showLoading,
+            "正在加载该项目的 GitHub Issue 列表…",
+            "issues",
+          )}
+        </div>
+      </div>
+    `;
+  }
+
+  private normalizeIssueStatusKey(status: string): "open" | "in_progress" | "blocked" | "closed" | "other" {
+    const key = String(status ?? "").trim().toLowerCase();
+    if (!key || key === "open" || key === "todo" || key === "new") return "open";
+    if (["in_progress", "in-progress", "progress", "doing", "running", "active", "queued", "pending"].includes(key)) return "in_progress";
+    if (["blocked", "on_hold", "on-hold", "hold", "failed", "error"].includes(key)) return "blocked";
+    if (["closed", "done", "resolved", "completed", "merged"].includes(key)) return "closed";
+    return "other";
+  }
+
+  private resolveIssueDisplayStatus(issue: Issue): string {
+    const workflowStatus = String(issue.workflow_status ?? "").trim();
+    if (workflowStatus) return workflowStatus;
+    const rawState = String(issue.status ?? "").trim().toLowerCase();
+    if (rawState === "closed") return "closed";
+    const labels = Array.isArray(issue.labels)
+      ? issue.labels.map((item) => String(item ?? "").trim().toLowerCase()).filter(Boolean)
+      : [];
+    const hasLabel = (candidates: string[]) => candidates.some((item) => labels.includes(String(item).toLowerCase()));
+    if (hasLabel(["forgeops:failed", "status:failed", "status:blocked", "blocked", "on-hold", "on_hold"])) {
+      return "blocked";
+    }
+    if (hasLabel(["forgeops:running", "forgeops:queued", "status:running", "status:in-progress", "status:in_progress", "in-progress", "in_progress"])) {
+      return "in_progress";
+    }
+    if (hasLabel(["forgeops:ready", "status:open", "open", "todo", "backlog"])) {
+      return "open";
+    }
+    return String(issue.status ?? "").trim() || "open";
+  }
+
+  private getIssueStatusLabel(status: string): string {
+    const raw = String(status ?? "").trim();
+    const key = this.normalizeIssueStatusKey(raw);
+    if (key === "open") return "OPEN";
+    if (key === "in_progress") return "IN PROGRESS";
+    if (key === "blocked") return "BLOCKED";
+    if (key === "closed") return "CLOSED";
+    return raw ? raw.toUpperCase() : "OTHER";
+  }
+
+  private getIssueStatusChipClass(status: string): string {
+    const key = this.normalizeIssueStatusKey(status);
+    if (key === "in_progress") return "in-progress";
+    return key;
+  }
+
+  private buildIssueStatusGroups(issues: Issue[]): Array<{
+    id: "open" | "in_progress" | "blocked" | "closed" | "other";
+    title: string;
+    rows: Issue[];
+    openByDefault: boolean;
+  }> {
+    const buckets: Record<"open" | "in_progress" | "blocked" | "closed" | "other", Issue[]> = {
+      open: [],
+      in_progress: [],
+      blocked: [],
+      closed: [],
+      other: [],
+    };
+    for (const issue of issues) {
+      buckets[this.normalizeIssueStatusKey(this.resolveIssueDisplayStatus(issue))].push(issue);
+    }
+    const sortByUpdatedAt = (left: Issue, right: Issue) => {
+      const leftTs = Date.parse(String(left.updated_at ?? ""));
+      const rightTs = Date.parse(String(right.updated_at ?? ""));
+      if (!Number.isFinite(leftTs) && !Number.isFinite(rightTs)) return 0;
+      if (!Number.isFinite(leftTs)) return 1;
+      if (!Number.isFinite(rightTs)) return -1;
+      return rightTs - leftTs;
+    };
+    const groups = [
+      { id: "open" as const, title: "Open（待处理）", rows: buckets.open },
+      { id: "in_progress" as const, title: "In Progress（进行中）", rows: buckets.in_progress },
+      { id: "blocked" as const, title: "Blocked（阻塞）", rows: buckets.blocked },
+      { id: "closed" as const, title: "Closed（已关闭）", rows: buckets.closed },
+      { id: "other" as const, title: "Other（其他）", rows: buckets.other },
+    ];
+    return groups
+      .filter((group) => group.rows.length > 0)
+      .map((group) => ({
+        ...group,
+        rows: group.rows.slice().sort(sortByUpdatedAt),
+        openByDefault: group.id !== "closed",
+      }));
+  }
+
+  private renderIssueCard(issue: Issue) {
+    const runSummary = this.getIssueRunSummary(issue.id);
+    const labels = Array.isArray(issue.labels) ? issue.labels : [];
+    const displayStatus = this.resolveIssueDisplayStatus(issue);
+    return html`
+      <div class="row">
+        <div class="issue-card-head">
+          <div class="title">${issue.title}</div>
+          <div class="issue-chip-row">
+            <span class=${`issue-status-chip ${this.getIssueStatusChipClass(displayStatus)}`}>
+              ${this.getIssueStatusLabel(displayStatus)}
+            </span>
+            ${runSummary.target
+              ? html`
+                  <button
+                    type="button"
+                    class="issue-run-chip"
+                    @click=${() => this.onOpenRunFromIssue(issue.id)}
+                  >
+                    ${runSummary.running > 0 ? `查看运行中 Run (${runSummary.running})` : "查看最近 Run"}
+                  </button>
+                `
+              : null}
           </div>
         </div>
+        <div class="mono">#${issue.id}</div>
+        <div class="mono">status=${displayStatus} · github_state=${issue.status} · updated=${issue.updated_at}</div>
+        ${runSummary.total > 0
+          ? html`<div class="mono">runs=${runSummary.total} · running=${runSummary.running} · target=${runSummary.target?.id ?? "-"}</div>`
+          : null}
+        ${labels.length > 0
+          ? html`
+              <div class="issue-chip-row">
+                ${labels.map((label) => html`<span class="issue-label-chip">${label}</span>`)}
+              </div>
+            `
+          : null}
+        ${issue.github_url
+          ? html`<div class="mono"><a href=${issue.github_url} target="_blank" rel="noreferrer">open in GitHub</a></div>`
+          : null}
+        ${issue.description ? html`<div class="mono">${issue.description}</div>` : null}
       </div>
     `;
   }
@@ -5902,22 +7415,11 @@ export class ForgeOpsApp extends LitElement {
         </div>
       `;
     }
-    if (this.projectDataLoading && this.runs.length === 0 && !this.runDetail) {
-      return html`
-        <div class="panel">
-          <div class="panel-header"><span>运行实况</span></div>
-          <div class="panel-body">
-            ${this.renderProjectLoadingHint(
-              "正在加载该项目的 Run 与会话数据…",
-              this.renderProjectLoadingSkeleton("runs"),
-            )}
-          </div>
-        </div>
-      `;
-    }
+    const showLoading = this.projectDataLoading && this.runs.length === 0 && !this.runDetail;
     return html`
-      <div class="details run-details-layout">
-        <section class="subpanel">
+      <div class="page-loading-shell">
+        <div class=${`details run-details-layout page-loading-content ${showLoading ? "dim" : "ready"}`}>
+          <section class="subpanel">
           <div class="panel-header">
             <span>运行记录</span>
             <div class="panel-header-actions">
@@ -5964,21 +7466,27 @@ export class ForgeOpsApp extends LitElement {
                 `
               : html`<div class="hint">请选择一个 Run 查看详情。</div>`}
           </div>
-        </section>
+          </section>
 
-        ${this.runDetail
-          ? this.renderRunInspectorPanel(this.runDetail)
-          : html`
-              <section class="subpanel run-inspector">
-                <div class="panel-header">
-                  <span>运行细节</span>
-                  <span class="tag">-</span>
-                </div>
-                <div class="run-inspector-window">
-                  <div class="hint">请选择一个 Run 查看事件流和产物。</div>
-                </div>
-              </section>
-            `}
+          ${this.runDetail
+            ? this.renderRunInspectorPanel(this.runDetail)
+            : html`
+                <section class="subpanel run-inspector">
+                  <div class="panel-header">
+                    <span>运行细节</span>
+                    <span class="tag">-</span>
+                  </div>
+                  <div class="run-inspector-window">
+                    <div class="hint">请选择一个 Run 查看事件流和产物。</div>
+                  </div>
+                </section>
+              `}
+        </div>
+        ${this.renderProjectLoadingOverlay(
+          showLoading,
+          "正在加载该项目的 Run 与会话数据…",
+          "runs",
+        )}
       </div>
     `;
   }
@@ -5994,61 +7502,58 @@ export class ForgeOpsApp extends LitElement {
         </div>
       `;
     }
-    if (this.projectDataLoading && !this.workflowConfig) {
-      return html`
-        <div class="panel workflow-panel">
-          <div class="panel-header"><span>工作流编排</span></div>
-          <div class="panel-body workflow-panel-body">
-            ${this.renderProjectLoadingHint(
-              "正在加载 workflow 配置与 DAG…",
-              this.renderProjectLoadingSkeleton("workflow"),
-            )}
-          </div>
-        </div>
-      `;
-    }
+    const showLoading = this.projectDataLoading && !this.workflowConfig;
     return html`
       <div class="panel workflow-panel">
         <div class="panel-header">
           <span>工作流编排</span>
           <span class="tag">${this.workflowConfig?.resolved.steps.length ?? 0} steps</span>
         </div>
-        <div class="panel-body workflow-panel-body">
-          ${this.workflowConfig
-            ? html`
-                <form @submit=${this.onSaveWorkflow}>
-                  <label>
-                    workflow.yaml
-                    <textarea
-                      name="workflowYaml"
-                      .value=${this.workflowYamlDraft}
-                      @input=${(ev: InputEvent) => {
-                        const target = ev.currentTarget as HTMLTextAreaElement;
-                        this.workflowYamlDraft = target.value;
-                      }}
-                      style="min-height: 220px;"
-                    ></textarea>
-                  </label>
-                  <div class="hint">
-                    解析结果: ${this.workflowConfig.resolved.id} / ${this.workflowConfig.resolved.name}
-                    · ${this.workflowConfig.resolved.steps.map((step) => step.key).join(" -> ")}
-                  </div>
-                  <div class="button-row">
-                    <button type="submit">保存工作流</button>
-                    <button type="button" @click=${this.onResetWorkflow}>恢复默认</button>
-                  </div>
-                </form>
-              `
-            : html`<div class="hint">当前项目未加载工作流配置。</div>`}
-          ${this.renderPipelineLivePanel({
-            fillHeight: Boolean(this.workflowConfig?.resolved.steps.length),
-          })}
+        <div class="panel-body workflow-panel-body page-loading-shell">
+          <div class=${`page-loading-content ${showLoading ? "dim" : "ready"}`}>
+            ${this.workflowConfig
+              ? html`
+                  <form @submit=${this.onSaveWorkflow}>
+                    <label>
+                      workflow.yaml
+                      <textarea
+                        name="workflowYaml"
+                        .value=${this.workflowYamlDraft}
+                        @input=${(ev: InputEvent) => {
+                          const target = ev.currentTarget as HTMLTextAreaElement;
+                          this.workflowYamlDraft = target.value;
+                        }}
+                        style="min-height: 220px;"
+                      ></textarea>
+                    </label>
+                    <div class="hint">
+                      解析结果: ${this.workflowConfig.resolved.id} / ${this.workflowConfig.resolved.name}
+                      · ${this.workflowConfig.resolved.steps.map((step) => step.key).join(" -> ")}
+                    </div>
+                    <div class="button-row">
+                      <button type="submit">保存工作流</button>
+                      <button type="button" @click=${this.onResetWorkflow}>恢复默认</button>
+                    </div>
+                  </form>
+                `
+              : html`<div class="hint">当前项目未加载工作流配置。</div>`}
+            ${this.renderPipelineLivePanel({
+              fillHeight: Boolean(this.workflowConfig?.resolved.steps.length),
+            })}
+          </div>
+          ${this.renderProjectLoadingOverlay(
+            showLoading,
+            "正在加载 workflow 配置与 DAG…",
+            "workflow",
+          )}
         </div>
       </div>
     `;
   }
 
-  private getSelectedProjectSchedulerJobs(filter: "all" | "cleanup" | "issueAutoRun" = "all") {
+  private getSelectedProjectSchedulerJobs(
+    filter: "all" | "cleanup" | "issueAutoRun" | "skillPromotion" | "globalSkillPromotion" = "all"
+  ) {
     const projectId = String(this.selectedProjectId ?? "").trim();
     if (!projectId) return [];
     const allJobs = Array.isArray(this.engine?.scheduler?.jobs) ? this.engine.scheduler.jobs : [];
@@ -6058,6 +7563,8 @@ export class ForgeOpsApp extends LitElement {
     const kindOrder = (kind: string): number => {
       if (kind === "cleanup") return 0;
       if (kind === "issueAutoRun") return 1;
+      if (kind === "skillPromotion") return 2;
+      if (kind === "globalSkillPromotion") return 3;
       return 9;
     };
     return [...jobs].sort((left, right) => {
@@ -6080,12 +7587,19 @@ export class ForgeOpsApp extends LitElement {
               .value=${this.schedulerJobFilter}
               @change=${(ev: Event) => {
                 const next = String((ev.currentTarget as HTMLSelectElement).value ?? "");
-                this.schedulerJobFilter = next === "cleanup" || next === "issueAutoRun" ? next : "all";
+                this.schedulerJobFilter = (
+                  next === "cleanup"
+                  || next === "issueAutoRun"
+                  || next === "skillPromotion"
+                  || next === "globalSkillPromotion"
+                ) ? next : "all";
               }}
             >
               <option value="all">all</option>
               <option value="cleanup">cleanup</option>
               <option value="issueAutoRun">issueAutoRun</option>
+              <option value="skillPromotion">skillPromotion</option>
+              <option value="globalSkillPromotion">globalSkillPromotion</option>
             </select>
           </label>
           <span class="tag">${jobs.length}/${allJobs.length}</span>
@@ -6097,9 +7611,18 @@ export class ForgeOpsApp extends LitElement {
           : jobs.map((job) => {
               const kind = String(job.kind ?? "");
               const isCleanup = kind === "cleanup";
+              const isIssueAutoRun = kind === "issueAutoRun";
+              const isSkillPromotion = kind === "skillPromotion";
+              const isGlobalSkillPromotion = kind === "globalSkillPromotion";
               const cleanupModeRaw = String(job.cleanupMode ?? "").trim().toLowerCase();
               const cleanupMode = cleanupModeRaw === "lite" ? "lite" : "deep";
-              const kindLabel = kind === "issueAutoRun" ? "Issue Auto-Run" : "Cleanup";
+              const kindLabel = isCleanup
+                ? "Cleanup"
+                : (isIssueAutoRun
+                  ? "Issue Auto-Run"
+                  : (isSkillPromotion
+                    ? "Skill Promotion"
+                    : (isGlobalSkillPromotion ? "Global Skill Promotion" : kind || "Unknown")));
               const syncedAt = String(job.syncedAt ?? "").trim() || "-";
               return html`
                 <div class="row">
@@ -6109,14 +7632,25 @@ export class ForgeOpsApp extends LitElement {
                       <span class="tag">kind=${kind || "-"}</span>
                       ${isCleanup
                         ? html`<span class=${`tag scheduler-mode-tag mode-${cleanupMode}`}>mode=${cleanupMode}</span>`
-                        : html`<span class="tag">label=${job.label || "-"}</span>`}
+                        : (isIssueAutoRun
+                          ? html`<span class="tag">label=${job.label || "-"}</span>`
+                          : html`<span class="tag">minScore=${job.minScore ?? "-"}</span>`)}
                     </div>
                   </div>
                   <div class="mono">cron=${job.cron} · timezone=${job.timezone}</div>
                   <div class="mono">onlyWhenIdle=${job.onlyWhenIdle ? "true" : "false"} · syncedAt=${syncedAt}</div>
                   ${isCleanup
                     ? html`<div class="mono">task=${job.task || "-"}</div>`
-                    : html`<div class="mono">maxRunsPerTick=${job.maxRunsPerTick ?? 0}</div>`}
+                    : (isIssueAutoRun
+                      ? html`<div class="mono">maxRunsPerTick=${job.maxRunsPerTick ?? 0}</div>`
+                      : html`
+                          <div class="mono">
+                            maxPromotionsPerTick=${job.maxPromotionsPerTick ?? 0}
+                            · minOccurrences=${job.minCandidateOccurrences ?? 0}
+                            · lookbackDays=${job.lookbackDays ?? 0}
+                            ${isGlobalSkillPromotion ? `· requireProjectSkill=${job.requireProjectSkill ? "true" : "false"}` : ""}
+                          </div>
+                        `)}
                 </div>
               `;
             })}
@@ -6157,21 +7691,33 @@ export class ForgeOpsApp extends LitElement {
         </div>
       `;
     }
-    if (this.projectDataLoading && !this.schedulerConfig) {
-      return html`
-        <div class="panel">
-          <div class="panel-header"><span>调度策略（Cron）</span></div>
-          <div class="panel-body">
-            ${this.renderProjectLoadingHint(
-              "正在加载该项目的调度配置…",
-              this.renderProjectLoadingSkeleton("scheduler"),
-            )}
-          </div>
-        </div>
-      `;
-    }
+    const showLoading = this.projectDataLoading && !this.schedulerConfig;
     const cleanupRuntimeJob = this.getSelectedProjectSchedulerJobs("cleanup")[0] ?? null;
     const issueRuntimeJob = this.getSelectedProjectSchedulerJobs("issueAutoRun")[0] ?? null;
+    const skillPromotionRuntimeJob = this.getSelectedProjectSchedulerJobs("skillPromotion")[0] ?? null;
+    const globalSkillPromotionRuntimeJob = this.getSelectedProjectSchedulerJobs("globalSkillPromotion")[0] ?? null;
+    const skillPromotionConfig = this.schedulerConfig?.skillPromotion ?? {
+      enabled: true,
+      cron: "15 */6 * * *",
+      onlyWhenIdle: true,
+      maxPromotionsPerTick: 1,
+      minCandidateOccurrences: 2,
+      lookbackDays: 14,
+      minScore: 0.6,
+      draft: true,
+      roles: [] as string[],
+    };
+    const globalSkillPromotionConfig = this.schedulerConfig?.globalSkillPromotion ?? {
+      enabled: true,
+      cron: "45 */12 * * *",
+      onlyWhenIdle: true,
+      maxPromotionsPerTick: 1,
+      minCandidateOccurrences: 3,
+      lookbackDays: 30,
+      minScore: 0.75,
+      requireProjectSkill: true,
+      draft: true,
+    };
     const cleanupRuntimeMode = (() => {
       const raw = String(cleanupRuntimeJob?.cleanupMode ?? this.schedulerConfig?.cleanup.mode ?? "deep")
         .trim()
@@ -6182,9 +7728,10 @@ export class ForgeOpsApp extends LitElement {
     return html`
       <div class="panel">
         <div class="panel-header"><span>调度策略（Cron）</span></div>
-        <div class="panel-body">
-          ${this.schedulerConfig
-            ? html`
+        <div class="panel-body page-loading-shell">
+          <div class=${`page-loading-content ${showLoading ? "dim" : "ready"}`}>
+            ${this.schedulerConfig
+              ? html`
                 <form class="row" @submit=${this.onSaveSchedulerBase}>
                   <div class="process-title-row">
                     <div class="title">全局调度配置</div>
@@ -6337,8 +7884,232 @@ export class ForgeOpsApp extends LitElement {
                     <button type="submit">保存 Issue Auto-Run Job</button>
                   </div>
                 </form>
+
+                <form class="row" @submit=${this.onSaveSchedulerSkillPromotionCard}>
+                  <div class="process-title-row">
+                    <div class="title">Skill Promotion Job</div>
+                    <div class="scheduler-job-tags">
+                      <span class="tag">kind=skillPromotion</span>
+                      <span class="tag">minScore=${skillPromotionConfig.minScore}</span>
+                      <span class="tag">${skillPromotionRuntimeJob ? "attached" : "not-attached"}</span>
+                    </div>
+                  </div>
+                  <div class="mono">
+                    ${skillPromotionRuntimeJob
+                      ? `运行态：cron=${skillPromotionRuntimeJob.cron} · timezone=${skillPromotionRuntimeJob.timezone} · syncedAt=${skillPromotionRuntimeJob.syncedAt}`
+                      : "运行态：当前未接管该 job（可能停用或等待 scheduler 下次同步）"}
+                  </div>
+                  <div class="grid-2">
+                    <label>
+                      自动晋升开关
+                      <select name="skillEnabled">
+                        <option value="true" ?selected=${skillPromotionConfig.enabled}>启用</option>
+                        <option value="false" ?selected=${!skillPromotionConfig.enabled}>停用</option>
+                      </select>
+                    </label>
+                    <label>
+                      Draft PR
+                      <select name="skillDraft">
+                        <option value="true" ?selected=${skillPromotionConfig.draft}>是</option>
+                        <option value="false" ?selected=${!skillPromotionConfig.draft}>否</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="grid-2">
+                    <label>
+                      Cron
+                      <input name="skillCron" .value=${skillPromotionConfig.cron} />
+                    </label>
+                    <label>
+                      仅空闲执行
+                      <select name="skillOnlyWhenIdle">
+                        <option value="true" ?selected=${skillPromotionConfig.onlyWhenIdle}>是</option>
+                        <option value="false" ?selected=${!skillPromotionConfig.onlyWhenIdle}>否</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="grid-3">
+                    <label>
+                      maxPromotionsPerTick
+                      <input
+                        name="skillMaxPromotionsPerTick"
+                        type="number"
+                        min="1"
+                        step="1"
+                        .value=${String(skillPromotionConfig.maxPromotionsPerTick)}
+                      />
+                    </label>
+                    <label>
+                      minCandidateOccurrences
+                      <input
+                        name="skillMinOccurrences"
+                        type="number"
+                        min="1"
+                        step="1"
+                        .value=${String(skillPromotionConfig.minCandidateOccurrences)}
+                      />
+                    </label>
+                    <label>
+                      lookbackDays
+                      <input
+                        name="skillLookbackDays"
+                        type="number"
+                        min="1"
+                        step="1"
+                        .value=${String(skillPromotionConfig.lookbackDays)}
+                      />
+                    </label>
+                  </div>
+                  <div class="grid-2">
+                    <label>
+                      minScore（0-1）
+                      <input
+                        name="skillMinScore"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        .value=${String(skillPromotionConfig.minScore)}
+                      />
+                    </label>
+                    <label>
+                      自动挂载角色（逗号分隔，可空）
+                      <input
+                        name="skillRoles"
+                        .value=${Array.isArray(skillPromotionConfig.roles) ? skillPromotionConfig.roles.join(",") : ""}
+                        placeholder="developer,tester"
+                      />
+                    </label>
+                  </div>
+                  <div class="button-row">
+                    <button type="submit">保存 Skill Promotion Job</button>
+                  </div>
+                </form>
+
+                <form class="row" @submit=${this.onSaveSchedulerGlobalSkillPromotionCard}>
+                  <div class="process-title-row">
+                    <div class="title">Global Skill Promotion Job</div>
+                    <div class="scheduler-job-tags">
+                      <span class="tag">kind=globalSkillPromotion</span>
+                      <span class="tag">minScore=${globalSkillPromotionConfig.minScore}</span>
+                      <span class="tag">${globalSkillPromotionRuntimeJob ? "attached" : "not-attached"}</span>
+                    </div>
+                  </div>
+                  <div class="mono">
+                    ${globalSkillPromotionRuntimeJob
+                      ? `运行态：cron=${globalSkillPromotionRuntimeJob.cron} · timezone=${globalSkillPromotionRuntimeJob.timezone} · syncedAt=${globalSkillPromotionRuntimeJob.syncedAt}`
+                      : "运行态：当前未接管该 job（可能停用或等待 scheduler 下次同步）"}
+                  </div>
+                  <div class="grid-2">
+                    <label>
+                      自动晋升开关
+                      <select name="globalSkillEnabled">
+                        <option value="true" ?selected=${globalSkillPromotionConfig.enabled}>启用</option>
+                        <option value="false" ?selected=${!globalSkillPromotionConfig.enabled}>停用</option>
+                      </select>
+                    </label>
+                    <label>
+                      Draft PR
+                      <select name="globalSkillDraft">
+                        <option value="true" ?selected=${globalSkillPromotionConfig.draft}>是</option>
+                        <option value="false" ?selected=${!globalSkillPromotionConfig.draft}>否</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="grid-2">
+                    <label>
+                      Cron
+                      <input name="globalSkillCron" .value=${globalSkillPromotionConfig.cron} />
+                    </label>
+                    <label>
+                      仅空闲执行
+                      <select name="globalSkillOnlyWhenIdle">
+                        <option value="true" ?selected=${globalSkillPromotionConfig.onlyWhenIdle}>是</option>
+                        <option value="false" ?selected=${!globalSkillPromotionConfig.onlyWhenIdle}>否</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="grid-3">
+                    <label>
+                      maxPromotionsPerTick
+                      <input
+                        name="globalSkillMaxPromotionsPerTick"
+                        type="number"
+                        min="1"
+                        step="1"
+                        .value=${String(globalSkillPromotionConfig.maxPromotionsPerTick)}
+                      />
+                    </label>
+                    <label>
+                      minCandidateOccurrences
+                      <input
+                        name="globalSkillMinOccurrences"
+                        type="number"
+                        min="1"
+                        step="1"
+                        .value=${String(globalSkillPromotionConfig.minCandidateOccurrences)}
+                      />
+                    </label>
+                    <label>
+                      lookbackDays
+                      <input
+                        name="globalSkillLookbackDays"
+                        type="number"
+                        min="1"
+                        step="1"
+                        .value=${String(globalSkillPromotionConfig.lookbackDays)}
+                      />
+                    </label>
+                  </div>
+                  <div class="grid-2">
+                    <label>
+                      minScore（0-1）
+                      <input
+                        name="globalSkillMinScore"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        .value=${String(globalSkillPromotionConfig.minScore)}
+                      />
+                    </label>
+                    <label>
+                      需项目技能已存在
+                      <select name="globalSkillRequireProjectSkill">
+                        <option value="true" ?selected=${globalSkillPromotionConfig.requireProjectSkill}>是</option>
+                        <option value="false" ?selected=${!globalSkillPromotionConfig.requireProjectSkill}>否</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="button-row">
+                    <button type="submit">保存 Global Skill Promotion Job</button>
+                  </div>
+                </form>
               `
-            : html`<div class="hint">当前项目未加载调度配置。</div>`}
+              : html`<div class="hint">当前项目未加载调度配置。</div>`}
+          </div>
+          ${this.renderProjectLoadingOverlay(
+            showLoading,
+            "正在加载该项目的调度配置…",
+            "scheduler",
+          )}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderGlobalTokenUsageModal() {
+    if (!this.showGlobalTokenUsageModal) return null;
+    return html`
+      <div class="modal-backdrop" @click=${this.onCloseGlobalTokenUsageModal}>
+        <div class="modal token-usage-modal" @click=${(ev: Event) => ev.stopPropagation()}>
+          <div class="modal-header">
+            <span>全局 Token 消耗</span>
+            <button type="button" @click=${this.onCloseGlobalTokenUsageModal}>关闭</button>
+          </div>
+          <div class="modal-body-scroll">
+            ${this.renderGlobalTokenUsageCard()}
+          </div>
         </div>
       </div>
     `;
@@ -6539,6 +8310,14 @@ export class ForgeOpsApp extends LitElement {
             </div>
 
             <div class="topbar-right">
+              <button
+                class="top-action-btn"
+                type="button"
+                @click=${this.onOpenGlobalTokenUsageModal}
+                title="查看全局 Token 消耗趋势"
+              >
+                全局 Token
+              </button>
               <div class="pill status">
                 <status-dot status=${automationReady ? "done" : "failed"}></status-dot>
                 <span>自动化: <strong>${automationReady ? "就绪" : "阻塞"}</strong></span>
@@ -6578,6 +8357,7 @@ export class ForgeOpsApp extends LitElement {
           </section>
         </main>
         ${this.renderMessageToast()}
+        ${this.renderGlobalTokenUsageModal()}
         ${this.renderAgentTeam3DModal()}
         ${this.renderCreateProjectModal()}
         ${this.renderPipelineFullscreenModal()}

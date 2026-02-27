@@ -1,7 +1,7 @@
 # 技能候选晋升 PR 审查闭环（独立于需求流水线）
 
 Status: Active  
-Updated: 2026-02-26
+Updated: 2026-02-27
 
 ## 背景
 
@@ -19,6 +19,7 @@ Updated: 2026-02-26
 1. 技能升级必须经过 PR（默认 draft）并支持人审。
 2. 技能升级链路与“需求交付 run”解耦，避免互相阻塞。
 3. 候选晋升结果可追溯到候选文件、run、issue 与证据。
+4. 支持作为自动晋升调度链路的执行底座（定时触发仍走同一 PR 审查模型）。
 
 ## 非目标
 
@@ -34,8 +35,10 @@ Updated: 2026-02-26
 
 2. Promotion 轨（技能治理）
 - 由 CLI/API 手动触发“候选晋升”动作。
+- 也可由 scheduler 定时触发“自动晋升动作”（见 `docs/design/skill-auto-promotion-scheduler.md`）。
 - ForgeOps 使用独立 worktree 分支生成技能变更并发起 PR。
 - 人类 reviewer 在 PR 中审查后决定合并/驳回。
+- 涉及技能内容重写时，优先由运行时 Agent 调用 `skill-creator` 完成（控制面只做路径与审查约束）。
 
 ## 晋升动作（MVP）
 
@@ -76,6 +79,18 @@ Updated: 2026-02-26
 4. `adoption scope` 是否明确（项目内 / 模板候选）。
 5. 是否与现有技能冲突或重复。
 
+## PR 标签约定（GitHub Label）
+
+1. 项目内技能晋升 PR 自动打标：
+   - `forgeops:skill-promotion`
+   - `forgeops:skill-project`
+   - `forgeops:auto` 或 `forgeops:manual`
+2. user-global 技能晋升 PR 自动打标：
+   - `forgeops:skill-promotion`
+   - `forgeops:skill-global`
+   - `forgeops:auto` 或 `forgeops:manual`
+3. 标签写入失败不阻断主链路，但会产生日志事件用于补偿治理。
+
 ## 验收标准（MVP）
 
 1. 可以列出项目内候选技能并选择一项晋升。
@@ -88,3 +103,4 @@ Updated: 2026-02-26
 1. `docs/design/issue-driven-taste-and-skill-loop.md`
 2. `docs/design/skill-evolution-closed-loop.md`
 3. `docs/design/skill-collective-evolution-service.md`
+4. `docs/design/skill-auto-promotion-scheduler.md`

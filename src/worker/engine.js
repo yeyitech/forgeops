@@ -19,6 +19,12 @@ function normalizeRuntimeStatus(value) {
   return "failed";
 }
 
+const LONG_SESSION_RISK_DEFAULTS = Object.freeze({
+  maxResumeFailuresPerStep: 2,
+  sessionRiskWindowMinutes: 30,
+  rotateRetryThreshold: 2,
+});
+
 function summarizeInvariantViolations(violations, limit = 3) {
   const list = Array.isArray(violations) ? violations : [];
   if (list.length === 0) {
@@ -58,6 +64,33 @@ function normalizeInvariantPolicy(config) {
       maxItems,
     },
   };
+}
+
+function parseJsonReport(rawText) {
+  const text = String(rawText ?? "").trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function summarizePlatformGateFailure(result, report) {
+  const failedRequired = Array.isArray(report?.failedRequired) ? report.failedRequired : [];
+  if (failedRequired.length > 0) {
+    return failedRequired
+      .slice(0, 3)
+      .map((item) => {
+        const id = String(item?.id ?? "unknown");
+        const detail = String(item?.detail ?? "").trim();
+        return detail ? `${id}: ${detail}` : id;
+      })
+      .join(" | ");
+  }
+  const stdout = String(result?.stdout ?? "").trim();
+  const stderr = String(result?.stderr ?? "").trim();
+  return stdout || stderr || "platform gate command failed";
 }
 
 function renderFollowupIssueBody(step, parsed, warningList, cappedWarningList) {
@@ -295,6 +328,50 @@ export class ForgeOpsEngine {
       });
     }
 
+    const normalizedStatus = normalizeRuntimeStatus(runtimeResult.status);
+    const nextRetryCount = normalizedStatus === "done"
+      ? Number(step.retry_count ?? 0)
+      : (Number(step.retry_count ?? 0) + 1);
+    if (runtimeResult.runtime?.resumeAttempted && !runtimeResult.runtime?.resumeSucceeded) {
+      const recentResumeFailures = this.store.countRecentResumeFailures(
+        stepId,
+        LONG_SESSION_RISK_DEFAULTS.sessionRiskWindowMinutes
+      );
+      const threadId = runtimeResult.runtime?.resumedFromThreadId
+        ?? runtimeResult.runtime?.threadId
+        ?? null;
+      const turnId = runtimeResult.runtime?.turnId ?? null;
+      const evidence = [
+        `recentResumeFailures=${recentResumeFailures}`,
+        `nextRetryCount=${nextRetryCount}`,
+        `maxRetries=${Number(step.max_retries ?? 0)}`,
+        `windowMinutes=${LONG_SESSION_RISK_DEFAULTS.sessionRiskWindowMinutes}`,
+      ];
+      this.store.emitEvent(runId, stepId, "runtime.session.risk", {
+        stepId,
+        stepKey: step.step_key,
+        threadId,
+        turnId,
+        reason: "resume_failed",
+        evidence,
+        recommendedAction: "consider rotating to a fresh thread if retries keep failing",
+      });
+
+      const shouldRotate = recentResumeFailures >= LONG_SESSION_RISK_DEFAULTS.maxResumeFailuresPerStep
+        || nextRetryCount >= LONG_SESSION_RISK_DEFAULTS.rotateRetryThreshold;
+      if (shouldRotate) {
+        this.store.emitEvent(runId, stepId, "runtime.session.rotate.recommended", {
+          stepId,
+          stepKey: step.step_key,
+          threadId,
+          turnId,
+          reason: "repeated_resume_failure",
+          evidence,
+          recommendedAction: "start a fresh thread for this step",
+        });
+      }
+    }
+
     this.store.updateSession(sessionId, {
       processPid: runtimeResult.runtime?.processPid ?? null,
       threadId: runtimeResult.runtime?.threadId ?? null,
@@ -310,13 +387,78 @@ export class ForgeOpsEngine {
       endedAt: nowIso(),
     });
 
-    const status = normalizeRuntimeStatus(runtimeResult.status);
+    const status = normalizedStatus;
 
     if (status === "done") {
+      if (step.step_key === "test") {
+        const checks = [
+          {
+            key: "preflight",
+            scriptPath: path.join(step.root_path, ".forgeops", "tools", "platform-preflight.mjs"),
+          },
+          {
+            key: "smoke",
+            scriptPath: path.join(step.root_path, ".forgeops", "tools", "platform-smoke.mjs"),
+          },
+        ];
+
+        for (const check of checks) {
+          if (!fs.existsSync(check.scriptPath)) {
+            const reason = `${check.key} gate missing: ${path.relative(step.root_path, check.scriptPath)}`;
+            this.store.emitEvent(runId, stepId, "platform.gate.failed", {
+              stepKey: step.step_key,
+              gate: check.key,
+              reason: "script_missing",
+              scriptPath: path.relative(step.root_path, check.scriptPath),
+              error: reason,
+            });
+            this.store.retryOrFailStep({
+              stepId,
+              error: reason,
+            });
+            return;
+          }
+
+          const result = spawnSync("node", [check.scriptPath, "--strict", "--json"], {
+            cwd: step.root_path,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          const report = parseJsonReport(result.stdout);
+          const ok = result.status === 0 && (report ? report.ok !== false : true);
+          const failedRequired = Array.isArray(report?.failedRequired) ? report.failedRequired : [];
+
+          this.store.emitEvent(runId, stepId, "platform.gate.checked", {
+            stepKey: step.step_key,
+            gate: check.key,
+            ok,
+            productType: String(report?.productType ?? step.project_product_type ?? ""),
+            scriptPath: path.relative(step.root_path, check.scriptPath),
+            failedRequiredCount: failedRequired.length,
+          });
+
+          if (!ok) {
+            const detail = summarizePlatformGateFailure(result, report);
+            this.store.emitEvent(runId, stepId, "platform.gate.failed", {
+              stepKey: step.step_key,
+              gate: check.key,
+              reason: "check_failed",
+              scriptPath: path.relative(step.root_path, check.scriptPath),
+              error: detail,
+              stderr: String(result.stderr ?? "").trim(),
+            });
+            this.store.retryOrFailStep({
+              stepId,
+              error: `platform ${check.key} gate failed: ${detail}`,
+            });
+            return;
+          }
+        }
+      }
+
       if (
         step.step_key === "implement"
         || step.step_key === "test"
-        || step.step_key === "platform-smoke"
         || step.step_key === "review"
       ) {
         const checkerPath = path.join(step.root_path, ".forgeops", "tools", "check-invariants.mjs");

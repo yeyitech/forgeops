@@ -326,6 +326,78 @@ function readGitHubSearchCount(repoSlug, type, qualifiers, cwd) {
   return Math.floor(count);
 }
 
+function normalizeGitHubIssueSearchCount(raw, fieldName) {
+  const count = Number(raw);
+  if (!Number.isFinite(count) || count < 0) {
+    throw new Error(`读取 GitHub 指标失败: 字段 ${fieldName} 不是有效计数`);
+  }
+  return Math.floor(count);
+}
+
+function readGitHubIssuePrMetricsBatch(repoSlug, cwd) {
+  const tokenEnv = getGitHubTokenEnvRequired();
+  const graphql = [
+    "query(",
+    "$qIssueAll: String!,",
+    "$qIssueOpen: String!,",
+    "$qIssueClosed: String!,",
+    "$qPrAll: String!,",
+    "$qPrOpen: String!,",
+    "$qPrClosed: String!",
+    ") {",
+    "issueAll: search(query: $qIssueAll, type: ISSUE) { issueCount }",
+    "issueOpen: search(query: $qIssueOpen, type: ISSUE) { issueCount }",
+    "issueClosed: search(query: $qIssueClosed, type: ISSUE) { issueCount }",
+    "prAll: search(query: $qPrAll, type: ISSUE) { issueCount }",
+    "prOpen: search(query: $qPrOpen, type: ISSUE) { issueCount }",
+    "prClosed: search(query: $qPrClosed, type: ISSUE) { issueCount }",
+    "}",
+  ].join(" ");
+  const output = runCommand(
+    "gh",
+    [
+      "api",
+      "graphql",
+      "-f",
+      `query=${graphql}`,
+      "-f",
+      `qIssueAll=repo:${repoSlug} type:issue`,
+      "-f",
+      `qIssueOpen=repo:${repoSlug} type:issue state:open`,
+      "-f",
+      `qIssueClosed=repo:${repoSlug} type:issue state:closed`,
+      "-f",
+      `qPrAll=repo:${repoSlug} type:pr`,
+      "-f",
+      `qPrOpen=repo:${repoSlug} type:pr state:open`,
+      "-f",
+      `qPrClosed=repo:${repoSlug} type:pr state:closed`,
+    ],
+    {
+      cwd,
+      env: tokenEnv,
+      errorPrefix: "读取 GitHub 指标失败",
+    },
+  );
+  const payload = JSON.parse(String(output ?? "{}"));
+  const data = payload?.data ?? payload;
+  if (!data || typeof data !== "object") {
+    throw new Error("读取 GitHub 指标失败: GraphQL 返回为空");
+  }
+  return {
+    issueCounts: {
+      all: normalizeGitHubIssueSearchCount(data.issueAll?.issueCount, "issueAll.issueCount"),
+      open: normalizeGitHubIssueSearchCount(data.issueOpen?.issueCount, "issueOpen.issueCount"),
+      closed: normalizeGitHubIssueSearchCount(data.issueClosed?.issueCount, "issueClosed.issueCount"),
+    },
+    prCounts: {
+      all: normalizeGitHubIssueSearchCount(data.prAll?.issueCount, "prAll.issueCount"),
+      open: normalizeGitHubIssueSearchCount(data.prOpen?.issueCount, "prOpen.issueCount"),
+      closed: normalizeGitHubIssueSearchCount(data.prClosed?.issueCount, "prClosed.issueCount"),
+    },
+  };
+}
+
 function ensureDefaultBranch(repoRoot, defaultBranch = "main") {
   const current = runCommandSafe("git", ["-C", repoRoot, "branch", "--show-current"]);
   if (current && current.trim()) {
@@ -463,12 +535,26 @@ function mapGitHubIssueToRecord(projectId, issue) {
       .map((item) => String(item?.name ?? item ?? "").trim())
       .filter(Boolean)
     : [];
+  const normalizedLabels = labels.map((item) => item.toLowerCase());
+  const hasLabel = (candidates) => candidates.some((item) => normalizedLabels.includes(String(item).toLowerCase()));
+  const isClosed = state === "closed";
+  let workflowStatus = isClosed ? "closed" : "open";
+  if (!isClosed) {
+    if (hasLabel(["forgeops:failed", "status:failed", "status:blocked", "blocked", "on-hold", "on_hold"])) {
+      workflowStatus = "blocked";
+    } else if (hasLabel(["forgeops:running", "forgeops:queued", "status:running", "status:in-progress", "status:in_progress", "in-progress", "in_progress"])) {
+      workflowStatus = "in_progress";
+    } else if (hasLabel(["forgeops:ready", "status:open", "open", "todo", "backlog"])) {
+      workflowStatus = "open";
+    }
+  }
   return {
     id: String(number),
     project_id: String(projectId),
     title,
     description: body,
-    status: state === "closed" ? "closed" : "open",
+    status: isClosed ? "closed" : "open",
+    workflow_status: workflowStatus,
     created_at: createdAt,
     updated_at: updatedAt,
     github_number: number,
@@ -1049,6 +1135,98 @@ export function updateGitHubIssueLabels(params) {
   return mapGitHubIssueToRecord(projectId, refreshed);
 }
 
+function readGitHubIssueLabelsByNumber(repoRoot, repoSlug, issueNumber, tokenEnv) {
+  const raw = runCommand(
+    "gh",
+    [
+      "api",
+      `/repos/${repoSlug}/issues/${issueNumber}`,
+      "-q",
+      ".labels[].name",
+    ],
+    {
+      cwd: repoRoot,
+      env: tokenEnv,
+      errorPrefix: `GitHub issue 标签读取失败 (#${issueNumber})`,
+    }
+  );
+  const list = String(raw ?? "")
+    .split(/\r?\n/)
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+  return normalizeIssueLabels(list);
+}
+
+export function updateGitHubPullRequestLabels(params) {
+  const repoRoot = path.resolve(params.repoRootPath);
+  const prNumber = Number(params.prNumber ?? 0);
+  if (!Number.isFinite(prNumber) || prNumber <= 0) {
+    throw new Error(`Invalid GitHub pull request ref: ${params.prNumber}`);
+  }
+  const addLabels = normalizeIssueLabels(params.addLabels);
+  const removeLabels = normalizeIssueLabels(params.removeLabels)
+    .filter((label) => !addLabels.includes(label));
+
+  assertTooling();
+  ensureGitIdentity(repoRoot);
+  ensureGitHubPatAvailable(repoRoot);
+  const { remote } = ensureGitHubOrigin(repoRoot);
+  const tokenEnv = getGitHubTokenEnvRequired();
+
+  for (const label of addLabels) {
+    ensureGitHubIssueLabel(repoRoot, remote.slug, label, tokenEnv);
+  }
+
+  if (addLabels.length > 0) {
+    runCommand(
+      "gh",
+      [
+        "pr",
+        "edit",
+        String(prNumber),
+        "--repo",
+        remote.slug,
+        "--add-label",
+        addLabels.join(","),
+      ],
+      {
+        cwd: repoRoot,
+        env: tokenEnv,
+        errorPrefix: `GitHub PR 标签更新失败 (#${prNumber})`,
+      }
+    );
+  }
+
+  const latestLabels = readGitHubIssueLabelsByNumber(repoRoot, remote.slug, prNumber, tokenEnv);
+  const removable = removeLabels.filter((label) => latestLabels.includes(label));
+
+  if (removable.length > 0) {
+    runCommand(
+      "gh",
+      [
+        "pr",
+        "edit",
+        String(prNumber),
+        "--repo",
+        remote.slug,
+        "--remove-label",
+        removable.join(","),
+      ],
+      {
+        cwd: repoRoot,
+        env: tokenEnv,
+        errorPrefix: `GitHub PR 标签更新失败 (#${prNumber})`,
+      }
+    );
+  }
+
+  return {
+    repo: remote.slug,
+    prNumber,
+    labels: readGitHubIssueLabelsByNumber(repoRoot, remote.slug, prNumber, tokenEnv),
+  };
+}
+
 export function closeGitHubIssue(params) {
   const repoRoot = path.resolve(params.repoRootPath);
   const projectId = String(params.projectId ?? "");
@@ -1390,9 +1568,241 @@ export function mergeGitHubPullRequest(params) {
   };
 }
 
+function listGitUnmergedFiles(worktreePath) {
+  const raw = runCommandSafe("git", ["-C", worktreePath, "diff", "--name-only", "--diff-filter=U"]);
+  return String(raw ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function runCodexMergeConflictResolution(params) {
+  const codexBin = String(params?.codexBin ?? process.env.FORGEOPS_CODEX_BIN ?? "codex").trim() || "codex";
+  if (!commandExists(codexBin)) {
+    return {
+      ok: false,
+      reason: "codex_not_found",
+      detail: `未找到 codex 可执行文件: ${codexBin}`,
+    };
+  }
+
+  const worktreePath = path.resolve(params.worktreePath);
+  const branchName = String(params.branchName ?? "").trim();
+  const baseRef = String(params.baseRef ?? "").trim();
+  const conflictFiles = Array.isArray(params.conflictFiles) ? params.conflictFiles : [];
+  const timeoutMs = Number.isFinite(Number(params.timeoutMs))
+    ? Math.max(60_000, Math.min(30 * 60 * 1000, Math.floor(Number(params.timeoutMs))))
+    : 8 * 60 * 1000;
+  const model = String(params.model ?? process.env.FORGEOPS_CODEX_MODEL ?? "gpt-5.3-codex").trim();
+
+  const prompt = [
+    "你正在执行 ForgeOps 自动合并冲突修复任务。",
+    "目标：在当前 git 工作目录中解决 merge/rebase 冲突，保持原有功能语义不变。",
+    "要求：",
+    "- 仅修改冲突相关文件与必要的连带文件；",
+    "- 必须移除所有冲突标记（<<<<<<<, =======, >>>>>>>）；",
+    "- 修复后执行 `git add -A`；不要执行 push；",
+    "- 如果无法在当前上下文安全修复，请输出简短原因并退出非 0。",
+    "",
+    `分支: ${branchName || "-"}`,
+    `基线: ${baseRef || "-"}`,
+    `冲突文件: ${conflictFiles.length > 0 ? conflictFiles.join(", ") : "-"}`,
+  ].join("\n");
+
+  const args = [
+    "exec",
+    "--skip-git-repo-check",
+    "--cd",
+    worktreePath,
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--config",
+    `approval_policy=${encodeTomlString("never")}`,
+    "--config",
+    `sandbox_mode=${encodeTomlString("danger-full-access")}`,
+  ];
+  if (model) {
+    args.push("--model", model);
+  }
+  args.push("-");
+
+  const result = spawnSync(codexBin, args, {
+    cwd: worktreePath,
+    env: process.env,
+    encoding: "utf8",
+    input: prompt,
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: timeoutMs,
+  });
+
+  const stdout = String(result.stdout ?? "").trim();
+  const stderr = String(result.stderr ?? "").trim();
+  const status = Number.isFinite(result.status) ? Number(result.status) : null;
+  const detail = stderr || stdout || String(result.error?.message ?? "").trim();
+  return {
+    ok: !result.error && status === 0,
+    reason: !result.error && status === 0 ? "" : "codex_failed",
+    detail,
+    stdout,
+    stderr,
+    status,
+  };
+}
+
+export function autoResolvePullRequestMergeConflict(params) {
+  const repoRoot = path.resolve(params.repoRootPath);
+  const worktreePath = path.resolve(params.worktreePath ?? repoRoot);
+  const branchName = String(params.branchName ?? "").trim();
+  const baseRef = String(params.baseRef ?? "").trim();
+  const runId = String(params.runId ?? "").trim();
+  const prNumber = Number(params.prNumber ?? 0);
+
+  if (!branchName) {
+    return {
+      resolved: false,
+      reason: "branch_missing",
+      detail: "branchName 不能为空",
+      conflictFiles: [],
+    };
+  }
+  if (!baseRef) {
+    return {
+      resolved: false,
+      reason: "base_ref_missing",
+      detail: "baseRef 不能为空",
+      conflictFiles: [],
+    };
+  }
+  if (!fs.existsSync(worktreePath)) {
+    return {
+      resolved: false,
+      reason: "worktree_missing",
+      detail: `worktree 不存在: ${worktreePath}`,
+      conflictFiles: [],
+    };
+  }
+
+  const abortMergeIfNeeded = () => {
+    runCommandSafe("git", ["-C", worktreePath, "merge", "--abort"]);
+    runCommandSafe("git", ["-C", worktreePath, "rebase", "--abort"]);
+  };
+
+  try {
+    runCommand("git", ["-C", repoRoot, "fetch", "origin", "--prune"], {
+      errorPrefix: "冲突修复失败: 无法同步 origin",
+    });
+    abortMergeIfNeeded();
+
+    runCommand("git", ["-C", worktreePath, "checkout", branchName], {
+      errorPrefix: `冲突修复失败: 无法切换到分支 ${branchName}`,
+    });
+
+    const remoteBranchRef = `origin/${branchName}`;
+    const remoteBranchExists = Boolean(
+      runCommandSafe("git", ["-C", repoRoot, "show-ref", "--verify", `refs/remotes/${remoteBranchRef}`])
+    );
+    if (remoteBranchExists) {
+      runCommand("git", ["-C", worktreePath, "reset", "--hard", remoteBranchRef], {
+        errorPrefix: `冲突修复失败: 无法重置到 ${remoteBranchRef}`,
+      });
+    }
+
+    const mergeProbe = runCommandProbe("git", ["-C", worktreePath, "merge", "--no-ff", "--no-edit", baseRef], {
+      timeoutMs: 120_000,
+    });
+
+    if (!mergeProbe.ok) {
+      const conflictFiles = listGitUnmergedFiles(worktreePath);
+      if (conflictFiles.length === 0) {
+        abortMergeIfNeeded();
+        return {
+          resolved: false,
+          reason: "merge_failed_non_conflict",
+          detail: formatProbeFailure(mergeProbe),
+          conflictFiles: [],
+        };
+      }
+
+      const codexResult = runCodexMergeConflictResolution({
+        worktreePath,
+        branchName,
+        baseRef,
+        conflictFiles,
+      });
+      if (!codexResult.ok) {
+        abortMergeIfNeeded();
+        return {
+          resolved: false,
+          reason: codexResult.reason || "codex_failed",
+          detail: codexResult.detail || "codex 运行失败",
+          conflictFiles,
+        };
+      }
+
+      const unresolved = listGitUnmergedFiles(worktreePath);
+      if (unresolved.length > 0) {
+        abortMergeIfNeeded();
+        return {
+          resolved: false,
+          reason: "conflicts_unresolved",
+          detail: `仍有未解决冲突: ${unresolved.join(", ")}`,
+          conflictFiles: unresolved,
+        };
+      }
+
+      runCommand("git", ["-C", worktreePath, "add", "-A"], {
+        errorPrefix: "冲突修复失败: 无法暂存修复结果",
+      });
+      const pending = runCommand("git", ["-C", worktreePath, "status", "--porcelain"], {
+        errorPrefix: "冲突修复失败: 无法读取修复后状态",
+      });
+      if (!pending.trim()) {
+        abortMergeIfNeeded();
+        return {
+          resolved: false,
+          reason: "no_changes_after_resolution",
+          detail: "冲突修复后没有可提交变更",
+          conflictFiles: conflictFiles,
+        };
+      }
+
+      const commitMessage = runId
+        ? `chore(merge): resolve conflicts for ${runId} (#${prNumber || 0})`
+        : `chore(merge): resolve conflicts for #${prNumber || 0}`;
+      runCommand("git", ["-C", worktreePath, "commit", "-m", commitMessage], {
+        errorPrefix: "冲突修复失败: 无法提交冲突修复",
+      });
+    }
+
+    runCommand("git", ["-C", worktreePath, "push", "origin", branchName], {
+      errorPrefix: `冲突修复失败: 无法推送分支 ${branchName}`,
+    });
+    const headSha = runCommandSafe("git", ["-C", worktreePath, "rev-parse", "HEAD"]) || "";
+
+    return {
+      resolved: true,
+      reason: "",
+      detail: "",
+      branchName,
+      baseRef,
+      prNumber,
+      headSha: String(headSha).trim(),
+      conflictFiles: [],
+    };
+  } catch (err) {
+    abortMergeIfNeeded();
+    return {
+      resolved: false,
+      reason: "exception",
+      detail: err instanceof Error ? err.message : String(err),
+      conflictFiles: [],
+    };
+  }
+}
+
 export function syncDefaultBranchFromRemote(params) {
   const checked = ensureGitHubFlowPrerequisites(params.rootPath);
   const repoRoot = checked.repoRoot;
+  const autoStashDirty = params?.autoStashDirty !== false;
 
   runCommand("git", ["-C", repoRoot, "fetch", "origin", "--prune"], {
     errorPrefix: "主分支同步失败: 无法同步 origin",
@@ -1428,16 +1838,35 @@ export function syncDefaultBranchFromRemote(params) {
   const dirty = runCommand("git", ["-C", repoRoot, "status", "--porcelain"], {
     errorPrefix: "主分支同步失败: 无法读取工作区状态",
   });
+  let stashedWorkspace = false;
+  let stashRestored = false;
   if (dirty.trim()) {
-    return {
+    if (!autoStashDirty) {
+      return {
+        repoRoot,
+        baseRef,
+        baseBranch,
+        synced: false,
+        changed: false,
+        switchedFrom: "",
+        skippedReason: "workspace_dirty",
+        stashedWorkspace: false,
+        stashRestored: false,
+      };
+    }
+
+    runCommand("git", [
+      "-C",
       repoRoot,
-      baseRef,
-      baseBranch,
-      synced: false,
-      changed: false,
-      switchedFrom: "",
-      skippedReason: "workspace_dirty",
-    };
+      "stash",
+      "push",
+      "--include-untracked",
+      "-m",
+      `forgeops-mainline-sync-${Date.now()}`,
+    ], {
+      errorPrefix: "主分支同步失败: 无法暂存本地改动",
+    });
+    stashedWorkspace = true;
   }
 
   const currentBranch = String(runCommandSafe("git", ["-C", repoRoot, "branch", "--show-current"]) || "").trim();
@@ -1445,6 +1874,15 @@ export function syncDefaultBranchFromRemote(params) {
     runCommandSafe("git", ["-C", repoRoot, "show-ref", "--verify", `refs/heads/${baseBranch}`])
   );
   const switchedFrom = currentBranch && currentBranch !== baseBranch ? currentBranch : "";
+  let outcome = {
+    repoRoot,
+    baseRef,
+    baseBranch,
+    synced: false,
+    changed: false,
+    switchedFrom,
+    skippedReason: "unknown",
+  };
 
   try {
     if (switchedFrom) {
@@ -1469,7 +1907,7 @@ export function syncDefaultBranchFromRemote(params) {
       canFastForward = false;
     }
     if (!canFastForward) {
-      return {
+      outcome = {
         repoRoot,
         baseRef,
         baseBranch,
@@ -1478,34 +1916,49 @@ export function syncDefaultBranchFromRemote(params) {
         switchedFrom,
         skippedReason: "local_branch_diverged",
       };
+    } else {
+      const before = runCommand("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+        errorPrefix: "主分支同步失败: 无法读取同步前 HEAD",
+      });
+      runCommand("git", ["-C", repoRoot, "merge", "--ff-only", baseRef], {
+        errorPrefix: `主分支同步失败: 无法 fast-forward 到 ${baseRef}`,
+      });
+      const after = runCommand("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+        errorPrefix: "主分支同步失败: 无法读取同步后 HEAD",
+      });
+
+      outcome = {
+        repoRoot,
+        baseRef,
+        baseBranch,
+        synced: true,
+        changed: before !== after,
+        switchedFrom,
+        skippedReason: "",
+      };
     }
-
-    const before = runCommand("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
-      errorPrefix: "主分支同步失败: 无法读取同步前 HEAD",
-    });
-    runCommand("git", ["-C", repoRoot, "merge", "--ff-only", baseRef], {
-      errorPrefix: `主分支同步失败: 无法 fast-forward 到 ${baseRef}`,
-    });
-    const after = runCommand("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
-      errorPrefix: "主分支同步失败: 无法读取同步后 HEAD",
-    });
-
-    return {
-      repoRoot,
-      baseRef,
-      baseBranch,
-      synced: true,
-      changed: before !== after,
-      switchedFrom,
-      skippedReason: "",
-    };
   } finally {
     if (switchedFrom) {
-      runCommandSafe("git", ["-C", repoRoot, "checkout", switchedFrom], {
+      const restored = runCommandSafe("git", ["-C", repoRoot, "checkout", switchedFrom], {
         errorPrefix: `主分支同步失败: 无法恢复分支 ${switchedFrom}`,
       });
+      if (restored === null) {
+        throw new Error(`主分支同步失败: 无法恢复分支 ${switchedFrom}; 已保留临时 stash，请手动恢复`);
+      }
+    }
+    if (stashedWorkspace) {
+      runCommand("git", ["-C", repoRoot, "stash", "pop"], {
+        errorPrefix: "主分支同步失败: 同步后恢复临时改动失败（stash 已保留）",
+      });
+      stashRestored = true;
     }
   }
+
+  return {
+    ...outcome,
+    stashedWorkspace,
+    stashRestored,
+  };
 }
 
 export function ensureGitHubPullRequestForRun(params) {
@@ -1529,7 +1982,10 @@ export function ensureGitHubPullRequestForRun(params) {
     repoRootPath: repoRoot,
     branchName,
   });
-  if (existing?.number) {
+  const existingState = String(existing?.state ?? "").trim().toUpperCase();
+  const allowUpdateExistingPr = params.allowUpdateExistingPr === true;
+  const existingIsOpen = existing?.number && existingState === "OPEN";
+  if (existingIsOpen && !allowUpdateExistingPr) {
     return normalizePullRequestRecord(existing, {
       repo: remote.slug,
       existing: true,
@@ -1559,6 +2015,17 @@ export function ensureGitHubPullRequestForRun(params) {
   runCommand("git", ["-C", worktreePath, "push", "-u", "origin", branchName], {
     errorPrefix: `GitHub PR 创建失败 (${branchName}): 推送分支失败`,
   });
+
+  if (existingIsOpen && allowUpdateExistingPr) {
+    return normalizePullRequestRecord(existing, {
+      repo: remote.slug,
+      existing: true,
+      created: false,
+      commitCreated,
+      pushed: true,
+      skippedReason: commitCreated ? "updated_existing" : "existing_open_no_new_commit",
+    });
+  }
 
   const baseRef = String(params.baseRef ?? `origin/${normalizeBaseBranchName("main")}`).trim();
   const aheadProbe = resolveGitAheadState({
@@ -1789,6 +2256,10 @@ export function createProjectGitHubIssue(params) {
   const title = String(params.title ?? "").trim();
   const body = String(params.body ?? "");
   const automationReadyLabel = "forgeops:ready";
+  const labels = Array.from(new Set([
+    automationReadyLabel,
+    ...normalizeIssueLabels(params.labels),
+  ]));
   if (!title) {
     throw new Error("title is required");
   }
@@ -1798,7 +2269,9 @@ export function createProjectGitHubIssue(params) {
   ensureGitHubPatAvailable(repoRoot);
   const { remote } = ensureGitHubOrigin(repoRoot);
   const tokenEnv = getGitHubTokenEnvRequired();
-  ensureGitHubIssueLabel(repoRoot, remote.slug, automationReadyLabel, tokenEnv);
+  for (const label of labels) {
+    ensureGitHubIssueLabel(repoRoot, remote.slug, label, tokenEnv);
+  }
   const output = runCommand(
     "gh",
     [
@@ -1811,7 +2284,7 @@ export function createProjectGitHubIssue(params) {
       "--body",
       body,
       "--label",
-      automationReadyLabel,
+      labels.join(","),
     ],
     {
       cwd: repoRoot,
@@ -1928,19 +2401,29 @@ export function readGitHubIssuePrMetrics(rootPath) {
 
   try {
     ensureGitHubPatAvailable(binding.repoRoot);
-    const issueCounts = {
-      all: readGitHubSearchCount(binding.slug, "issue", [], binding.repoRoot),
-      open: readGitHubSearchCount(binding.slug, "issue", ["state:open"], binding.repoRoot),
-      closed: readGitHubSearchCount(binding.slug, "issue", ["state:closed"], binding.repoRoot),
-    };
-    const prCounts = {
-      all: readGitHubSearchCount(binding.slug, "pr", [], binding.repoRoot),
-      open: readGitHubSearchCount(binding.slug, "pr", ["state:open"], binding.repoRoot),
-      closed: readGitHubSearchCount(binding.slug, "pr", ["state:closed"], binding.repoRoot),
-    };
+    let countsSource = "github_graphql_search";
+    let issueCounts = null;
+    let prCounts = null;
+    try {
+      const batch = readGitHubIssuePrMetricsBatch(binding.slug, binding.repoRoot);
+      issueCounts = batch.issueCounts;
+      prCounts = batch.prCounts;
+    } catch {
+      countsSource = "github_api";
+      issueCounts = {
+        all: readGitHubSearchCount(binding.slug, "issue", [], binding.repoRoot),
+        open: readGitHubSearchCount(binding.slug, "issue", ["state:open"], binding.repoRoot),
+        closed: readGitHubSearchCount(binding.slug, "issue", ["state:closed"], binding.repoRoot),
+      };
+      prCounts = {
+        all: readGitHubSearchCount(binding.slug, "pr", [], binding.repoRoot),
+        open: readGitHubSearchCount(binding.slug, "pr", ["state:open"], binding.repoRoot),
+        closed: readGitHubSearchCount(binding.slug, "pr", ["state:closed"], binding.repoRoot),
+      };
+    }
     return {
       available: true,
-      source: "github_api",
+      source: countsSource,
       repo: binding.slug,
       issueCounts,
       prCounts,
