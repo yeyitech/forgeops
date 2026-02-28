@@ -53,6 +53,7 @@ function printUsage() {
       "forgeops skill resolve <projectId>                                # resolve effective skills with priority",
       "forgeops skill promote <projectId> --candidate PATH [--name SKILL_NAME] [--description TEXT] [--roles developer,tester] [--role reviewer] [--ready]",
       "forgeops skill global-status                                      # show user-global skill library status",
+      "forgeops skill global-init [--github-repo OWNER/NAME] [--public|--private] [--branch-protection|--no-branch-protection]",
       "forgeops skill promote-global <projectId> --candidate PATH [--name SKILL_NAME] [--description TEXT] [--ready]",
       "forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER [--mode quick|standard]",
       "forgeops run list [--project PROJECT_ID]",
@@ -72,8 +73,8 @@ function printUsage() {
       "forgeops workflow set <projectId> [--yaml-file PATH | --yaml TEXT | --reset-default | --auto-merge-conflict-max-attempts N]",
       "forgeops workflow set-conflict-retries <projectId> <0-8>",
       "forgeops workflow get-conflict-retries <projectId>",
-      "forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill]  # ForgeOps usage coach",
-      "forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only]  # managed project copilot",
+      "forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--fresh]  # ForgeOps usage coach",
+      "forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only] [--fresh]  # managed project copilot",
       "forgeops help",
     ].join("\n") + "\n"
   );
@@ -493,6 +494,46 @@ async function commandSkill(store, args) {
     return;
   }
 
+  if (action === "global-init") {
+    const visibility = args.includes("--public") ? "public" : "private";
+    const branchProtection = args.includes("--branch-protection");
+    const progressLines = [];
+    const result = store.initializeUserGlobalSkillsRepo({
+      githubRepo: getFlag(args, "--github-repo", ""),
+      visibility,
+      branchProtection,
+      onProgress: (item) => {
+        const message = String(item?.message ?? "").trim();
+        if (!message) return;
+        progressLines.push(
+          `- [${String(item?.stage ?? "git")}] ${message}`
+        );
+      },
+    });
+    if (args.includes("--json")) {
+      process.stdout.write(`${JSON.stringify({ progress: progressLines, ...result }, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write("User-global skill repo initialized.\n");
+    process.stdout.write(`- root: ${result.rootPath}\n`);
+    process.stdout.write(`- repo: ${result.githubRepo}\n`);
+    process.stdout.write(`- origin: ${result.originUrl}\n`);
+    process.stdout.write(`- branch: ${result.branch}\n`);
+    process.stdout.write(`- visibility: ${result.visibility}\n`);
+    if (result.branchProtectionApplied) {
+      process.stdout.write(`- branch protection: applied${result.branchProtectionFallback ? " (fallback)" : ""}\n`);
+    } else if (result.branchProtectionSkipped) {
+      process.stdout.write(`- branch protection: skipped (${result.branchProtectionSkipReason || "disabled"})\n`);
+    }
+    if (progressLines.length > 0) {
+      process.stdout.write("Progress:\n");
+      for (const line of progressLines) {
+        process.stdout.write(`${line}\n`);
+      }
+    }
+    return;
+  }
+
   if (action === "candidates") {
     const projectId = args[1];
     if (!projectId) {
@@ -611,7 +652,7 @@ async function commandSkill(store, args) {
     return;
   }
 
-  fail("Unknown skill command. Try: forgeops skill global-status|candidates|resolve|promote|promote-global");
+  fail("Unknown skill command. Try: forgeops skill global-status|global-init|candidates|resolve|promote|promote-global");
 }
 
 async function commandRun(store, args) {
@@ -1584,7 +1625,10 @@ function findLatestInteractiveCodexSessionForCwd(cwd, options = {}) {
     if (meta.source !== "cli" && meta.source !== "vscode") continue;
     const sessionCwd = normalizeWorkspacePath(meta.cwd);
     if (sessionCwd !== target) continue;
-    if (minTimestampMs > 0 && meta.timestampMs > 0 && meta.timestampMs < minTimestampMs) continue;
+    if (minTimestampMs > 0) {
+      if (!Number.isFinite(meta.timestampMs) || meta.timestampMs <= 0) continue;
+      if (meta.timestampMs < minTimestampMs) continue;
+    }
     return meta;
   }
   return null;
@@ -1725,8 +1769,8 @@ async function commandCodex(_store, args) {
   const head = String(args[0] ?? "").trim().toLowerCase();
   if (head === "help" || head === "--help" || head === "-h") {
     process.stdout.write(
-      "Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill]\n"
-      + "       forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only]\n"
+      "Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--fresh]\n"
+      + "       forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only] [--fresh]\n"
     );
     return;
   }
@@ -1736,8 +1780,8 @@ async function commandCodex(_store, args) {
     : args;
 
   if (action !== "session" && action !== "project") {
-    fail("Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill]\n"
-      + "       forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only]");
+    fail("Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--fresh]\n"
+      + "       forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--local-only] [--fresh]");
   }
 
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -1798,6 +1842,7 @@ async function commandCodex(_store, args) {
   if (action !== "project" && commandArgs.includes("--local-only")) {
     fail("--local-only is only supported by: forgeops codex project");
   }
+  const freshStart = commandArgs.includes("--fresh");
 
   const userPromptRaw = String(getFlag(commandArgs, "--prompt", "") ?? "").trim();
   const userPrompt = localOnly
@@ -1812,24 +1857,9 @@ async function commandCodex(_store, args) {
     ? String(_store.loadProjectGovernance(projectScope.root_path) ?? "").trim()
     : "";
   const enforceDangerSandbox = parseBool(process.env.FORGEOPS_ENFORCE_DANGER_SANDBOX, true) !== false;
-  let tracked = getTrackedCodexWorkspaceSession(launchCwd, sessionKey);
+  const tracked = getTrackedCodexWorkspaceSession(launchCwd, sessionKey);
   const appInstalled = isCodexAppInstalled();
-  if (!tracked?.threadId) {
-    const seeded = findLatestInteractiveCodexSessionForCwd(launchCwd, { maxScan: 400 });
-    if (seeded?.sessionId) {
-      setTrackedCodexWorkspaceSession(launchCwd, sessionKey, {
-        threadId: seeded.sessionId,
-        updatedAt: seeded.timestamp || new Date().toISOString(),
-        source: seeded.source,
-        sessionFile: seeded.filePath,
-        workspaceCwd: launchCwd,
-        model,
-        metaSkillPath: includeMetaSkill ? metaSkillPath : "",
-      });
-      tracked = getTrackedCodexWorkspaceSession(launchCwd, sessionKey);
-    }
-  }
-  const hasTrackedThread = Boolean(tracked?.threadId);
+  const hasTrackedThread = Boolean(tracked?.threadId) && !freshStart;
 
   let resolvedClient = "cli";
   if (clientPreference === "cli") {
@@ -1850,6 +1880,7 @@ async function commandCodex(_store, args) {
   process.stdout.write(`- tracking-key: ${trackingKey}\n`);
   process.stdout.write(`- client: ${resolvedClient} (requested=${clientPreference})\n`);
   process.stdout.write(`- tracked-thread: ${tracked?.threadId ?? "(none)"}\n`);
+  process.stdout.write(`- fresh: ${freshStart ? "true" : "false"}\n`);
   process.stdout.write(`- meta-skill: ${includeMetaSkill ? metaSkillPath : "disabled"}\n`);
   process.stdout.write(`- local-only: ${localOnly ? "true" : "false"}\n`);
   process.stdout.write(`- model: ${model || "(codex default)"}\n`);
@@ -1874,6 +1905,8 @@ async function commandCodex(_store, args) {
     process.stdout.write("Codex App not installed. Falling back to Codex CLI session.\n");
   } else if (clientPreference === "auto" && hasTrackedThread) {
     process.stdout.write("Auto mode uses CLI resume to guarantee same tracked thread.\n");
+  } else if (freshStart && tracked?.threadId) {
+    process.stdout.write(`--fresh enabled: ignore tracked thread ${tracked.threadId} and start a new CLI thread.\n`);
   } else if (clientPreference === "auto" && appInstalled && !hasTrackedThread) {
     process.stdout.write("No tracked thread found yet; bootstrapping first session via Codex CLI.\n");
   }
@@ -1934,7 +1967,7 @@ async function commandCodex(_store, args) {
   const cliExitCode = typeof cliLaunch.status === "number" ? cliLaunch.status : 0;
 
   const discovered = findLatestInteractiveCodexSessionForCwd(launchCwd, {
-    minTimestampMs: hasTrackedThread ? 0 : (sessionStartMs - 2_000),
+    minTimestampMs: sessionStartMs - 2_000,
     maxScan: 400,
   });
   if (discovered?.sessionId) {

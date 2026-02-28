@@ -1,9 +1,11 @@
+.git/
 node_modules/
 frontend/node_modules/
-frontend/dist/
-dist/
 .forgeops-runtime/
 demo-project/
+/dist/
+!frontend/dist/
+!frontend/dist/**
 *.log
 .DS_Store
 .forgeops/worktrees/

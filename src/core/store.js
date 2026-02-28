@@ -20,6 +20,7 @@ import {
   listGitHubIssues,
   markGitHubPullRequestReadyForReview,
   mergeGitHubPullRequest,
+  provisionProjectGitHubRemote,
   readGitHubRepoBinding,
   readGitHubIssuePrMetrics,
   syncDefaultBranchFromRemote,
@@ -114,6 +115,50 @@ const MAINLINE_REF_FETCH_STATE = new Map();
 const RUN_MODE_STANDARD = "standard";
 const RUN_MODE_QUICK = "quick";
 const RUN_MODE_QUICK_STEP_KEYS = new Set(["implement", "test", "cleanup"]);
+
+function ensureUserGlobalSkillsBootstrapFiles(rootPath) {
+  const resolved = path.resolve(rootPath);
+  fs.mkdirSync(resolved, { recursive: true });
+  fs.mkdirSync(path.join(resolved, "skills"), { recursive: true });
+  fs.mkdirSync(path.join(resolved, "catalog"), { recursive: true });
+
+  const readmePath = path.join(resolved, "README.md");
+  if (!fs.existsSync(readmePath)) {
+    const content = [
+      "# ForgeOps User-Global Skills",
+      "",
+      "This repository stores user-global skills for ForgeOps.",
+      "",
+      "- Canonical skills path: `skills/<skill-name>/SKILL.md`",
+      "- Skill index: `catalog/skills-index.json`",
+      "- Audit log: `audit.ndjson`",
+      "",
+      "> Managed by ForgeOps CLI.",
+      "",
+    ].join("\n");
+    fs.writeFileSync(readmePath, content, "utf8");
+  }
+
+  const roleIndexPath = path.join(resolved, "catalog", "roles.json");
+  if (!fs.existsSync(roleIndexPath)) {
+    fs.writeFileSync(roleIndexPath, `${JSON.stringify({ roles: {} }, null, 2)}\n`, "utf8");
+  }
+
+  const skillsIndexPath = path.join(resolved, "catalog", "skills-index.json");
+  if (!fs.existsSync(skillsIndexPath)) {
+    fs.writeFileSync(skillsIndexPath, `${JSON.stringify({ version: 1, skills: [] }, null, 2)}\n`, "utf8");
+  }
+
+  const auditPath = path.join(resolved, "audit.ndjson");
+  if (!fs.existsSync(auditPath)) {
+    fs.writeFileSync(auditPath, "", "utf8");
+  }
+
+  const gitkeepPath = path.join(resolved, "skills", ".gitkeep");
+  if (!fs.existsSync(gitkeepPath)) {
+    fs.writeFileSync(gitkeepPath, "", "utf8");
+  }
+}
 
 function countTextLines(text) {
   const source = String(text ?? "");
@@ -2653,6 +2698,42 @@ export class ForgeOpsStore {
         auditLog: path.join(rootPath, "audit.ndjson"),
         catalogIndex: path.join(rootPath, "catalog", "skills-index.json"),
       },
+    };
+  }
+
+  initializeUserGlobalSkillsRepo(params = {}) {
+    const rootPath = path.resolve(String(params?.globalRoot ?? USER_GLOBAL_SKILLS_ROOT));
+    const visibility = params?.visibility === "public" ? "public" : "private";
+    const githubRepo = String(params?.githubRepo ?? "").trim();
+    const defaultRepoName = String(params?.repoName ?? "forgeops-user-global-skills").trim() || "forgeops-user-global-skills";
+    const branchProtection = params?.branchProtection === true;
+
+    ensureUserGlobalSkillsBootstrapFiles(rootPath);
+    const git = provisionProjectGitHubRemote({
+      rootPath,
+      projectName: defaultRepoName,
+      githubRepo: githubRepo || undefined,
+      visibility,
+      defaultBranch: "main",
+      branchProtection,
+      description: "ForgeOps user-global skill library",
+      onProgress: typeof params?.onProgress === "function"
+        ? (item) => params.onProgress(item)
+        : undefined,
+    });
+
+    return {
+      rootPath,
+      visibility,
+      githubRepo: git.remoteSlug,
+      originUrl: git.originUrl,
+      branch: git.branch,
+      createdRemote: git.createdRemote === true,
+      pushedInitialCommit: git.pushedInitialCommit === true,
+      branchProtectionApplied: git.branchProtectionApplied === true,
+      branchProtectionFallback: git.branchProtectionFallback === true,
+      branchProtectionSkipped: git.branchProtectionSkipped === true,
+      branchProtectionSkipReason: String(git.branchProtectionSkipReason ?? ""),
     };
   }
 

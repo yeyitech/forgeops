@@ -108,6 +108,65 @@ npm install
 npm run dev
 ```
 
+## OSS 一键分发（不依赖 npm publish）
+
+当无法发布到 npm/GitHub Release 时，可用 OSS 承载安装包与安装脚本。
+
+维护者发布（本仓库执行）：
+
+```bash
+npm run release:oss -- --base-url https://<your-oss-domain>/forgeops
+```
+
+说明：`release:oss` 会先自动构建 `frontend/dist`，再打包发布，安装后可直接打开 UI（无需用户再手动 `npm run build`）。
+安装脚本默认会自动初始化 user-global 技能 Git 仓库（默认仓库名 `forgeops-user-global-skills`，默认 private、默认不启用分支保护）。
+
+产物位于 `dist/oss-release/`：
+
+- `forgeops-<version>.tgz`
+- `forgeops-<version>.tgz.sha256`
+- `latest.json`
+- `install-latest.sh`
+
+将这 4 个文件上传到同一个 OSS 前缀后，把下面一条命令发给使用者：
+
+```bash
+curl -fsSL https://<your-oss-domain>/forgeops/install-latest.sh | bash
+```
+
+说明：
+
+- 安装脚本会自动下载 tgz、校验 SHA256、安装 `forgeops`、执行 `forgeops doctor`。
+- 可通过环境变量在安装阶段一键写入 Git 配置与 PAT：
+  - `FORGEOPS_GIT_USER_NAME` + `FORGEOPS_GIT_USER_EMAIL`：写入全局 git 身份。
+  - `FORGEOPS_GITHUB_PAT`：直接写入 PAT。
+  - `FORGEOPS_GITHUB_PAT_FILE`：从文件读取 PAT（优先级低于 `FORGEOPS_GITHUB_PAT`）。
+  - `FORGEOPS_HOME`：指定 ForgeOps 运行目录（默认 `~/.forgeops`，PAT 写入 `<FORGEOPS_HOME>/github-auth.json`）。
+- 安装脚本默认会执行 `forgeops skill global-init --private --no-branch-protection` 初始化 user-global 技能仓库。
+- 默认会自动初始化演示项目：`forgeops-demo`（路径默认 `~/project/forgeops-demo`，默认 `--no-branch-protection`）。
+- 默认会自动创建 2 个 demo issue：
+  - 基线需求 issue（不自动运行）；
+  - Quick 模式运行 issue（`--mode quick`，自动触发首个 run）。
+- 默认会自动安装并启动控制面服务（`forgeops service install + restart`），并尝试打开 Dashboard（默认 `http://127.0.0.1:4173`）。
+- 若仅安装不初始化：`FORGEOPS_INSTALL_SKIP_INIT=1` 后再执行上述命令。
+- 若仅初始化项目但跳过 demo issue 自动创建：`FORGEOPS_INSTALL_BOOTSTRAP_DEMO=0`。
+- 若仅跳过 user-global 技能仓库初始化：`FORGEOPS_INSTALL_SKIP_GLOBAL_SKILLS_INIT=1`。
+- 若指定 user-global 远端仓库：`FORGEOPS_GLOBAL_SKILLS_REPO=owner/repo`。
+- 若需要为 demo 项目启用分支保护：`FORGEOPS_PROJECT_BRANCH_PROTECTION=1`（默认 `0` 以兼容权限受限账号）。
+- 若跳过自动 Dashboard 拉起：`FORGEOPS_INSTALL_SKIP_DASHBOARD_SETUP=1`。
+- 若只跳过自动打开浏览器：`FORGEOPS_INSTALL_OPEN_DASHBOARD=0`。
+- 自定义 Dashboard 地址：`FORGEOPS_DASHBOARD_HOST`、`FORGEOPS_DASHBOARD_PORT`。
+
+示例（安装时一键完成 git + PAT 配置）：
+
+```bash
+FORGEOPS_INSTALL_SKIP_INIT=1 \
+FORGEOPS_GIT_USER_NAME="your-name" \
+FORGEOPS_GIT_USER_EMAIL="you@example.com" \
+FORGEOPS_GITHUB_PAT="ghp_xxx" \
+curl -fsSL https://<your-oss-domain>/forgeops/install-latest.sh | bash
+```
+
 ## 项目级流水线配置
 
 每个项目都可以通过 `<projectRoot>/.forgeops/workflow.yaml` 自定义流程（支持 DAG 依赖并发）。
@@ -389,6 +448,7 @@ forgeops issue create <projectId> "修复埋点字段" --mode quick
 forgeops issue create <projectId> "新增登录模块" --no-auto-run
 forgeops issue list <projectId>
 forgeops skill global-status
+forgeops skill global-init --private --no-branch-protection
 forgeops skill candidates <projectId>
 forgeops skill resolve <projectId>
 forgeops skill promote <projectId> --candidate .forgeops/skills/candidates/xxx.md --name miniapp-ui-polish --roles developer,tester
@@ -402,8 +462,8 @@ forgeops run resume <runId>
 forgeops run stop-all [--project PROJECT_ID]
 forgeops run resume-all [--project PROJECT_ID]
 forgeops run attach <runId> [--step STEP_KEY] [--session SESSION_ID] [--thread THREAD_ID]
-forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL]
-forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--local-only]
+forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--fresh]
+forgeops codex project [--project PROJECT_ID] [--cwd DIR] [--client auto|app|cli] [--session-key KEY] [--prompt TEXT] [--model MODEL] [--local-only] [--fresh]
 forgeops service install --host 127.0.0.1 --port 4173
 forgeops service start
 forgeops service stop
@@ -465,6 +525,7 @@ forgeops doctor --json
   - `--local-only`：本地直改模式，只允许代码/测试/文档操作，禁止触发 `forgeops issue *` 和 `forgeops run *` 流水线命令；
   - 默认不注入 `FORGEOPS_META_SKILL.md`，避免覆盖项目自身上下文；如需注入可传 `--meta-skill PATH`。
 - `forgeops codex session --client auto` 默认策略：优先保证“同一 tracked thread 可恢复”（走 CLI `resume`）；避免误开新会话。
+- `forgeops codex session --fresh` / `forgeops codex project --fresh`：强制忽略当前 tracked thread，启动全新会话；会话结束后会把新 thread 写回追踪映射。
 - `forgeops codex session --client app` 为显式 App 模式：会打开 Codex App，但当前 CLI 能力无法按 thread id 直接定位到指定会话（可能进入新会话或需手动切换）。
 - `forgeops codex session` 的 CLI 路径使用交互式 `codex`（`source-kind=cli`，可被 Codex App 默认会话列表识别），首轮默认注入 `FORGEOPS_META_SKILL.md` 作为执行约束（可用 `--no-meta-skill` 关闭，或用 `--meta-skill` 指定路径）。
 - 追踪映射持久化在 `$FORGEOPS_HOME/codex-session-registry.json`（默认 `~/.forgeops/codex-session-registry.json`）。
