@@ -102,7 +102,7 @@ function resolveDirectoryPickerStartPath(rawPath) {
   return path.resolve(text);
 }
 
-function parseRunModeInput(value, fallback = "standard") {
+function parseRunModeInput(value, fallback = "quick") {
   const text = String(value ?? "").trim().toLowerCase();
   if (!text) return fallback;
   if (text === "standard" || text === "quick") return text;
@@ -749,12 +749,15 @@ export function createServerApp(params) {
           return;
         }
         try {
-          const runMode = parseRunModeInput(body.runMode, "standard");
+          const runMode = parseRunModeInput(body.runMode, "quick");
           const labels = Array.isArray(body.labels)
             ? body.labels.map((item) => String(item ?? "").trim()).filter(Boolean)
             : [];
           if (runMode === "quick" && !labels.some((item) => item.toLowerCase() === "forgeops:quick")) {
             labels.push("forgeops:quick");
+          }
+          if (runMode === "standard" && !labels.some((item) => item.toLowerCase() === "forgeops:standard")) {
+            labels.push("forgeops:standard");
           }
           const created = store.createIssueWithAutoRun({
             projectId,
@@ -811,7 +814,7 @@ export function createServerApp(params) {
             task: body.task === undefined || body.task === null
               ? ""
               : String(body.task),
-            runMode: parseRunModeInput(body.runMode, "standard"),
+            runMode: parseRunModeInput(body.runMode, "quick"),
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

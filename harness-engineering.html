@@ -1,0 +1,1195 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeOps | Harness Engineering</title>
+    <link
+      rel="preconnect"
+      href="https://fonts.googleapis.com"
+    />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-0: #060a13;
+        --bg-1: #0a1120;
+        --bg-2: #101b2f;
+        --surface: rgba(12, 20, 36, 0.88);
+        --surface-strong: rgba(14, 24, 44, 0.98);
+        --line-soft: rgba(145, 168, 214, 0.24);
+        --line-strong: rgba(145, 168, 214, 0.48);
+        --text-main: #edf2ff;
+        --text-dim: #adbbda;
+        --text-soft: #7d8fb7;
+        --warm: #ff9652;
+        --warm-soft: rgba(255, 150, 82, 0.16);
+        --neon: #1de9c3;
+        --neon-soft: rgba(29, 233, 195, 0.18);
+        --magenta: #ff4fa3;
+        --radius-xs: 0.5rem;
+        --radius-sm: 0.8rem;
+        --radius-md: 1.2rem;
+        --radius-lg: 1.8rem;
+        --radius-pill: 999px;
+        --shadow-1: 0 12px 36px rgba(2, 6, 16, 0.4);
+        --shadow-2: 0 24px 54px rgba(2, 6, 16, 0.6);
+        --wrap: min(1160px, 92vw);
+        --space-1: clamp(0.6rem, 1.2vw, 0.9rem);
+        --space-2: clamp(0.9rem, 1.8vw, 1.4rem);
+        --space-3: clamp(1.2rem, 2.6vw, 2.1rem);
+        --space-4: clamp(1.8rem, 4vw, 3.2rem);
+        --space-5: clamp(2.6rem, 7vw, 5.6rem);
+        --font-display: "Archivo Black", "Clash Display", "Arial Black", sans-serif;
+        --font-body: "Space Grotesk", "Satoshi", "Avenir Next", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        font-family: var(--font-body);
+        color: var(--text-main);
+        background:
+          radial-gradient(circle at 90% -10%, rgba(255, 79, 163, 0.22), transparent 50%),
+          radial-gradient(circle at -8% 110%, rgba(29, 233, 195, 0.18), transparent 45%),
+          linear-gradient(170deg, var(--bg-0) 0%, var(--bg-1) 45%, var(--bg-2) 100%);
+        overflow-x: hidden;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: -1;
+        opacity: 0.44;
+        background-image:
+          linear-gradient(rgba(118, 147, 208, 0.1) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(118, 147, 208, 0.1) 1px, transparent 1px);
+        background-size: 38px 38px;
+        mask-image: radial-gradient(circle at center, black 35%, transparent 90%);
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .wrap {
+        width: var(--wrap);
+        margin: 0 auto;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        backdrop-filter: blur(16px);
+        background: linear-gradient(180deg, rgba(4, 8, 16, 0.86), rgba(4, 8, 16, 0.45));
+        border-bottom: 1px solid rgba(124, 151, 198, 0.25);
+      }
+
+      .topbar-inner {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: var(--space-2);
+        padding: 0.95rem 0;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .brand-dot {
+        width: 0.72rem;
+        height: 0.72rem;
+        border-radius: 50%;
+        background: linear-gradient(140deg, var(--warm), var(--magenta));
+        box-shadow: 0 0 20px rgba(255, 79, 163, 0.55);
+      }
+
+      .top-links {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.9rem;
+        font-size: 0.92rem;
+        color: var(--text-dim);
+      }
+
+      .top-links a {
+        padding: 0.4rem 0.65rem;
+        border-radius: var(--radius-pill);
+        border: 1px solid transparent;
+      }
+
+      .top-links a:hover {
+        border-color: var(--line-soft);
+        color: var(--text-main);
+      }
+
+      main {
+        padding-bottom: var(--space-5);
+      }
+
+      section {
+        padding: var(--space-5) 0;
+      }
+
+      .hero {
+        padding-top: clamp(3rem, 10vw, 7rem);
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1.08fr 0.92fr;
+        gap: var(--space-4);
+        align-items: start;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--line-soft);
+        padding: 0.4rem 0.75rem;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.74rem;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--neon);
+        box-shadow: 0 0 16px rgba(29, 233, 195, 0.85);
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        font-family: var(--font-display);
+        letter-spacing: 0.02em;
+        text-wrap: balance;
+      }
+
+      h1 {
+        margin-top: var(--space-2);
+        font-size: clamp(2rem, 5.8vw, 4.7rem);
+        line-height: 0.97;
+        text-transform: uppercase;
+      }
+
+      .title-mark {
+        color: var(--neon);
+        text-shadow: 0 0 24px rgba(29, 233, 195, 0.42);
+      }
+
+      .hero-copy {
+        margin: var(--space-3) 0 0;
+        font-size: clamp(1rem, 1.8vw, 1.24rem);
+        line-height: 1.74;
+        max-width: 62ch;
+        color: var(--text-dim);
+      }
+
+      .hero-copy strong {
+        color: var(--text-main);
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.95rem;
+        margin-top: var(--space-3);
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.45rem;
+        border: 1px solid transparent;
+        border-radius: var(--radius-pill);
+        padding: 0.8rem 1.1rem;
+        font-weight: 700;
+        font-size: 0.95rem;
+        transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+      }
+
+      .btn-primary {
+        color: #07131f;
+        background: linear-gradient(120deg, var(--warm), #ffc18d);
+        box-shadow: 0 8px 22px rgba(255, 150, 82, 0.35);
+      }
+
+      .btn-primary:hover {
+        background: linear-gradient(120deg, #ffaa71, #ffd5af);
+      }
+
+      .btn-ghost {
+        color: var(--text-main);
+        border-color: var(--line-soft);
+        background: rgba(8, 14, 26, 0.56);
+      }
+
+      .btn-ghost:hover {
+        border-color: var(--line-strong);
+        background: rgba(12, 20, 34, 0.88);
+      }
+
+      .chips {
+        margin-top: var(--space-3);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+      }
+
+      .chip {
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--line-soft);
+        background: rgba(10, 18, 34, 0.68);
+        color: var(--text-dim);
+        padding: 0.42rem 0.72rem;
+        font-size: 0.78rem;
+      }
+
+      .hero-panel {
+        position: relative;
+        border-radius: var(--radius-lg);
+        border: 1px solid rgba(122, 152, 205, 0.34);
+        background: var(--surface-strong);
+        box-shadow: var(--shadow-2);
+        overflow: hidden;
+      }
+
+      .hero-panel::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(circle at 18% 20%, rgba(255, 150, 82, 0.18), transparent 44%),
+          radial-gradient(circle at 82% 24%, rgba(29, 233, 195, 0.2), transparent 45%);
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.92rem 1rem;
+        border-bottom: 1px solid rgba(122, 152, 205, 0.22);
+        font-size: 0.75rem;
+        color: var(--text-soft);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .panel-head span {
+        width: 0.54rem;
+        height: 0.54rem;
+        border-radius: 50%;
+      }
+
+      .panel-head span:nth-child(1) {
+        background: #ff8a66;
+      }
+
+      .panel-head span:nth-child(2) {
+        background: #ffd166;
+      }
+
+      .panel-head span:nth-child(3) {
+        background: #32d583;
+      }
+
+      .terminal {
+        margin: 1rem;
+        border: 1px solid rgba(122, 152, 205, 0.26);
+        border-radius: var(--radius-sm);
+        background: rgba(6, 11, 22, 0.78);
+        padding: 0.9rem;
+      }
+
+      .line {
+        margin: 0;
+        font-family: "JetBrains Mono", "Fira Code", monospace;
+        font-size: 0.8rem;
+        line-height: 1.85;
+        color: #9fb3dd;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .line::before {
+        content: "$";
+        margin-right: 0.5rem;
+        color: var(--neon);
+      }
+
+      .signal-grid {
+        margin: 0 1rem 1rem;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.65rem;
+      }
+
+      .signal {
+        border: 1px solid rgba(122, 152, 205, 0.28);
+        border-radius: var(--radius-sm);
+        padding: 0.72rem;
+        background: rgba(8, 14, 26, 0.82);
+      }
+
+      .signal-label {
+        display: block;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-soft);
+      }
+
+      .signal-value {
+        margin-top: 0.35rem;
+        display: block;
+        font-size: 1.22rem;
+        font-family: var(--font-display);
+      }
+
+      .signal-value.neon {
+        color: var(--neon);
+        text-shadow: 0 0 16px rgba(29, 233, 195, 0.45);
+      }
+
+      .signal-value.warm {
+        color: var(--warm);
+      }
+
+      .section-label {
+        display: inline-block;
+        font-size: 0.74rem;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--text-soft);
+        margin-bottom: 0.92rem;
+      }
+
+      h2 {
+        font-size: clamp(1.55rem, 3.4vw, 3rem);
+        line-height: 1.08;
+      }
+
+      .lead {
+        margin-top: var(--space-2);
+        margin-bottom: 0;
+        color: var(--text-dim);
+        max-width: 72ch;
+        line-height: 1.75;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--space-3);
+      }
+
+      .panel {
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-md);
+        background: var(--surface);
+        padding: var(--space-3);
+        box-shadow: var(--shadow-1);
+      }
+
+      .panel h3 {
+        font-size: clamp(1.2rem, 2vw, 1.9rem);
+      }
+
+      .panel p {
+        color: var(--text-dim);
+        line-height: 1.7;
+        margin: 0.95rem 0 0;
+      }
+
+      .issue-list {
+        margin: 1.2rem 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 0.68rem;
+      }
+
+      .issue-list li {
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(122, 152, 205, 0.26);
+        background: rgba(10, 16, 30, 0.64);
+        padding: 0.78rem 0.88rem;
+        color: var(--text-dim);
+      }
+
+      .issue-list li strong {
+        color: var(--text-main);
+      }
+
+      .pillars-grid {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-2);
+      }
+
+      .pillar {
+        padding: 1rem;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(122, 152, 205, 0.26);
+        background: rgba(10, 16, 30, 0.72);
+      }
+
+      .pillar h3 {
+        font-size: 1.1rem;
+      }
+
+      .pillar p {
+        margin: 0.7rem 0 0;
+        line-height: 1.62;
+        color: var(--text-dim);
+        font-size: 0.95rem;
+      }
+
+      .loop-grid {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: 1.12fr 0.88fr;
+        gap: var(--space-3);
+        align-items: stretch;
+      }
+
+      .timeline {
+        position: relative;
+        padding-left: 1.15rem;
+      }
+
+      .timeline::before {
+        content: "";
+        position: absolute;
+        top: 0.45rem;
+        bottom: 0.45rem;
+        left: 0.33rem;
+        width: 2px;
+        background: linear-gradient(var(--neon), rgba(29, 233, 195, 0.15));
+      }
+
+      .step {
+        position: relative;
+        margin-bottom: 1rem;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(122, 152, 205, 0.28);
+        background: rgba(7, 13, 25, 0.82);
+        padding: 0.9rem;
+      }
+
+      .step::before {
+        content: "";
+        position: absolute;
+        left: -1.13rem;
+        top: 1.05rem;
+        width: 0.58rem;
+        height: 0.58rem;
+        border-radius: 50%;
+        background: var(--neon);
+        box-shadow: 0 0 0 4px rgba(29, 233, 195, 0.2);
+      }
+
+      .step h4 {
+        margin: 0;
+        font-size: 0.95rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .step p {
+        margin: 0.48rem 0 0;
+        color: var(--text-dim);
+        line-height: 1.6;
+        font-size: 0.92rem;
+      }
+
+      .orbit-wrap {
+        display: grid;
+        place-items: center;
+      }
+
+      .orbit {
+        position: relative;
+        width: min(100%, 430px);
+        aspect-ratio: 1/1;
+        border-radius: 50%;
+        border: 1px dashed rgba(122, 152, 205, 0.4);
+      }
+
+      .orbit::before {
+        content: "";
+        position: absolute;
+        inset: 14%;
+        border-radius: 50%;
+        border: 1px dashed rgba(255, 150, 82, 0.5);
+      }
+
+      .center-core {
+        position: absolute;
+        inset: 36%;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        border: 1px solid rgba(122, 152, 205, 0.42);
+        background: rgba(6, 12, 24, 0.9);
+        text-align: center;
+        font-family: var(--font-display);
+        font-size: clamp(0.74rem, 1.6vw, 1rem);
+        letter-spacing: 0.04em;
+        color: var(--neon);
+        text-transform: uppercase;
+      }
+
+      .orbit-node {
+        position: absolute;
+        width: 43%;
+        padding: 0.72rem;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(122, 152, 205, 0.34);
+        background: rgba(8, 14, 28, 0.82);
+        font-size: 0.84rem;
+        color: var(--text-dim);
+        line-height: 1.45;
+      }
+
+      .orbit-node strong {
+        display: block;
+        color: var(--text-main);
+        margin-bottom: 0.25rem;
+      }
+
+      .orbit-node.n1 {
+        left: -5%;
+        top: 14%;
+      }
+
+      .orbit-node.n2 {
+        right: -6%;
+        top: 18%;
+      }
+
+      .orbit-node.n3 {
+        right: -8%;
+        bottom: 15%;
+      }
+
+      .orbit-node.n4 {
+        left: -7%;
+        bottom: 11%;
+      }
+
+      .cards {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-2);
+      }
+
+      .card {
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius-sm);
+        background: rgba(10, 16, 29, 0.72);
+        padding: 1rem;
+      }
+
+      .card h3 {
+        font-size: 1.08rem;
+      }
+
+      .card p {
+        margin: 0.72rem 0 0;
+        line-height: 1.58;
+        color: var(--text-dim);
+        font-size: 0.92rem;
+      }
+
+      .flow {
+        margin-top: var(--space-3);
+        display: grid;
+        gap: 0.8rem;
+      }
+
+      .flow-item {
+        border: 1px solid rgba(122, 152, 205, 0.3);
+        border-radius: var(--radius-sm);
+        background: rgba(9, 15, 28, 0.72);
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.8rem;
+        align-items: start;
+        padding: 0.95rem;
+      }
+
+      .flow-index {
+        display: inline-grid;
+        place-items: center;
+        width: 2rem;
+        height: 2rem;
+        border-radius: 50%;
+        border: 1px solid rgba(122, 152, 205, 0.4);
+        color: var(--warm);
+        font-family: var(--font-display);
+        font-size: 0.92rem;
+      }
+
+      .flow-item h3 {
+        font-size: 1rem;
+      }
+
+      .flow-item p {
+        margin: 0.48rem 0 0;
+        color: var(--text-dim);
+        line-height: 1.58;
+        font-size: 0.93rem;
+      }
+
+      .highlights {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.7rem;
+      }
+
+      .highlight {
+        border-radius: var(--radius-sm);
+        padding: 0.92rem 0.86rem;
+        border: 1px solid rgba(122, 152, 205, 0.3);
+        background: rgba(8, 14, 26, 0.82);
+      }
+
+      .highlight b {
+        display: block;
+        font-family: var(--font-display);
+        font-size: 1rem;
+        color: var(--neon);
+        letter-spacing: 0.03em;
+      }
+
+      .highlight span {
+        display: block;
+        margin-top: 0.45rem;
+        color: var(--text-dim);
+        line-height: 1.5;
+        font-size: 0.86rem;
+      }
+
+      .cta-block {
+        border: 1px solid rgba(122, 152, 205, 0.34);
+        border-radius: var(--radius-lg);
+        padding: clamp(1.6rem, 4vw, 3.2rem);
+        background:
+          radial-gradient(circle at 80% 25%, rgba(255, 79, 163, 0.2), transparent 45%),
+          radial-gradient(circle at 20% 80%, rgba(29, 233, 195, 0.2), transparent 42%),
+          rgba(8, 14, 26, 0.84);
+      }
+
+      .cta-block p {
+        margin: 0.95rem 0 0;
+        color: var(--text-dim);
+        max-width: 70ch;
+        line-height: 1.72;
+      }
+
+      .cta-links {
+        margin-top: 1.15rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+      }
+
+      .doc-link {
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--line-soft);
+        padding: 0.45rem 0.78rem;
+        color: var(--text-dim);
+        font-size: 0.82rem;
+      }
+
+      .doc-link:hover {
+        border-color: var(--line-strong);
+        color: var(--text-main);
+      }
+
+      footer {
+        padding: var(--space-3) 0 var(--space-4);
+        color: var(--text-soft);
+        font-size: 0.84rem;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(20px);
+        transition: opacity 540ms ease, transform 540ms ease;
+      }
+
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+      }
+
+      .pulse {
+        animation: pulse-glow 2.2s ease-in-out infinite;
+      }
+
+      @keyframes pulse-glow {
+        0%,
+        100% {
+          box-shadow: inset 0 0 0 1px rgba(29, 233, 195, 0.28), 0 0 0 rgba(29, 233, 195, 0.2);
+        }
+        50% {
+          box-shadow: inset 0 0 0 1px rgba(29, 233, 195, 0.52), 0 0 28px rgba(29, 233, 195, 0.22);
+        }
+      }
+
+      @media (max-width: 1060px) {
+        .hero-grid,
+        .grid-2,
+        .loop-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .cards {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .highlights {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .orbit-node {
+          width: 45%;
+        }
+      }
+
+      @media (max-width: 700px) {
+        .topbar-inner {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .cards,
+        .pillars-grid,
+        .highlights,
+        .signal-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-item {
+          grid-template-columns: 1fr;
+        }
+
+        .orbit {
+          width: min(100%, 320px);
+        }
+
+        .orbit-node {
+          width: 46%;
+          font-size: 0.78rem;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+          transition-duration: 0s !important;
+          scroll-behavior: auto !important;
+        }
+
+        .reveal {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="wrap topbar-inner">
+        <a class="brand" href="#top">
+          <span class="brand-dot"></span>
+          <span>ForgeOps · Harness Engineering</span>
+        </a>
+        <nav class="top-links">
+          <a href="#why">Why Harness</a>
+          <a href="#pillars">Pillars</a>
+          <a href="#workflow">Dual Loop</a>
+          <a href="#capabilities">Capabilities</a>
+          <a href="#docs">Docs</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="wrap hero-grid">
+          <div class="reveal">
+            <span class="eyebrow">Control Plane Narrative</span>
+            <h1>
+              Build Fast.<br />
+              Keep <span class="title-mark">Entropy</span> Under Control.
+            </h1>
+            <p class="hero-copy">
+              ForgeOps 不是“再包一层 Agent CLI”。
+              <strong>它是 AI 研发流水线的控制系统</strong>，
+              把 Issue -> Run -> Step -> PR 的全链路变成可观测、可恢复、可治理的工程机制。
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="#workflow">查看执行主循环</a>
+              <a class="btn btn-ghost" href="#pillars">阅读 Harness 原则</a>
+            </div>
+            <div class="chips">
+              <span class="chip">Runtime Adapter 可替换</span>
+              <span class="chip">Issue-Only 强流程</span>
+              <span class="chip">CI Gate + Platform Gate</span>
+              <span class="chip">Quick / Standard 双模式</span>
+            </div>
+          </div>
+
+          <aside class="hero-panel reveal pulse">
+            <div class="panel-head">
+              <span></span><span></span><span></span>
+              runtime monitor
+            </div>
+            <div class="terminal">
+              <p class="line">forgeops issue create p1 "重构鉴权链路" --mode standard</p>
+              <p class="line">forgeops run create p1 --issue 456 --mode standard</p>
+              <p class="line">forgeops run attach run_01 --step test</p>
+              <p class="line">forgeops scheduler show p1</p>
+            </div>
+            <div class="signal-grid">
+              <div class="signal">
+                <span class="signal-label">Default Steps</span>
+                <span class="signal-value warm">6</span>
+              </div>
+              <div class="signal">
+                <span class="signal-label">Scheduler Jobs</span>
+                <span class="signal-value">4</span>
+              </div>
+              <div class="signal">
+                <span class="signal-label">Run Modes</span>
+                <span class="signal-value">Quick / Standard</span>
+              </div>
+              <div class="signal">
+                <span class="signal-label">Session Recovery</span>
+                <span class="signal-value neon">Resume Ready</span>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="why">
+        <div class="wrap">
+          <span class="section-label reveal">Why Harness Engineering</span>
+          <h2 class="reveal">吞吐量上涨时，真正稀缺的是人的注意力</h2>
+          <p class="lead reveal">
+            在 Agent 驱动研发里，问题不只是“能不能更快写代码”，而是如何避免反复踩坑、架构漂移和文档失真。
+            ForgeOps 把失败视为可编程信号：不只修一次结果，而是补一条机制，降低同类错误复发率。
+          </p>
+
+          <div class="grid-2" style="margin-top: var(--space-3)">
+            <article class="panel reveal">
+              <h3>问题面</h3>
+              <ul class="issue-list">
+                <li><strong>上下文失真：</strong>不可见知识无法被运行时推理，Agent 只能在当前可读仓库内决策。</li>
+                <li><strong>质量假阳性：</strong>CI 通过不等于平台真实可运行。</li>
+                <li><strong>流程不可追溯：</strong>缺少 step/session 级别状态与失败原因，复盘成本高。</li>
+                <li><strong>熵增积累：</strong>局部修补越来越多，长期技术债加速复利。</li>
+              </ul>
+            </article>
+            <article class="panel reveal">
+              <h3>ForgeOps 处理方式</h3>
+              <ul class="issue-list">
+                <li><strong>结构化工作流：</strong>项目级 workflow.yaml 支持 DAG 与门禁策略。</li>
+                <li><strong>运行态双闸门：</strong>同时保留 CI Gate 与 Platform Gate 观测。</li>
+                <li><strong>失败可恢复：</strong>step/session 支持 resume，保留 worktree 已落盘改动。</li>
+                <li><strong>周期清理：</strong>通过 scheduler 自动执行 cleanup / issue auto-run / skill promotion。</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="pillars">
+        <div class="wrap">
+          <span class="section-label reveal">Four Pillars</span>
+          <h2 class="reveal">Harness 不是口号，是可执行约束</h2>
+          <div class="pillars-grid">
+            <article class="pillar reveal">
+              <h3>Context Engineering</h3>
+              <p>短 `AGENTS.md` 做地图，深层知识放仓库文档，技能通过 `agent-skills.json -> SKILL.md` 按需装配。</p>
+            </article>
+            <article class="pillar reveal">
+              <h3>Architectural Constraints</h3>
+              <p>把边界、不变量、依赖方向写成可执行规则，错误信息直接成为下一轮修复指令。</p>
+            </article>
+            <article class="pillar reveal">
+              <h3>Observability</h3>
+              <p>run / step / session 全链路可追踪，失败带结构化原因，状态区分 CI Gate 与 Platform Gate。</p>
+            </article>
+            <article class="pillar reveal">
+              <h3>Garbage Collection</h3>
+              <p>周期任务扫描文档漂移与架构退化，自动提出修复，持续回写质量文档与规则基线。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow">
+        <div class="wrap">
+          <span class="section-label reveal">Dual Loop Model</span>
+          <h2 class="reveal">交付循环 + Harness 循环，共同压制复发</h2>
+          <div class="loop-grid">
+            <article class="panel reveal">
+              <h3>交付循环（默认 6 步）</h3>
+              <div class="timeline">
+                <div class="step">
+                  <h4>Architect</h4>
+                  <p>明确结构与约束，给后续步骤提供稳定边界。</p>
+                </div>
+                <div class="step">
+                  <h4>Issue</h4>
+                  <p>将需求升级为结构化 issue，缺失信息补齐假设与偏好信号。</p>
+                </div>
+                <div class="step">
+                  <h4>Implement</h4>
+                  <p>在独立 worktree 与分支中开发，完成后自动提交并创建/复用 PR。</p>
+                </div>
+                <div class="step">
+                  <h4>Test + Review</h4>
+                  <p>执行测试、平台验收与不变量检查，必要时触发有限次自愈。</p>
+                </div>
+                <div class="step">
+                  <h4>Cleanup</h4>
+                  <p>收敛熵增并产出技能候选，支持后续晋升为项目或 user-global 能力。</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="panel orbit-wrap reveal">
+              <div class="orbit">
+                <div class="center-core">Repeat Failures ↓</div>
+                <div class="orbit-node n1">
+                  <strong>1. 观测失败模式</strong>
+                  识别高频失败与漂移信号
+                </div>
+                <div class="orbit-node n2">
+                  <strong>2. 定位缺失能力</strong>
+                  明确是工具、规则还是上下文缺口
+                </div>
+                <div class="orbit-node n3">
+                  <strong>3. 补机制</strong>
+                  把经验沉淀为文档/脚本/不变量
+                </div>
+                <div class="orbit-node n4">
+                  <strong>4. 验证复发率</strong>
+                  真实运行中确认失败下降
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="capabilities">
+        <div class="wrap">
+          <span class="section-label reveal">Core Capabilities</span>
+          <h2 class="reveal">不是堆功能，而是把工程动作变成系统动作</h2>
+          <div class="cards">
+            <article class="card reveal">
+              <h3>Runtime Adapter</h3>
+              <p>运行时抽象稳定，当前默认接入 `codex exec --json`，边界设计支持后续多运行时扩展。</p>
+            </article>
+            <article class="card reveal">
+              <h3>GitHub 强流程</h3>
+              <p>`run create` 前强校验仓库与凭据，Issue-Only 绑定需求来源，分支命名与 worktree 隔离固定化。</p>
+            </article>
+            <article class="card reveal">
+              <h3>Session Recovery</h3>
+              <p>进程重启后可回收孤儿步骤，优先复用 thread 续跑，失败再回退同 step 重跑，不丢落盘成果。</p>
+            </article>
+            <article class="card reveal">
+              <h3>Quality Gates</h3>
+              <p>机械执行不变量检查，并将平台 preflight/smoke 纳入 `test` 闸门，避免“只过 CI”的假完成。</p>
+            </article>
+            <article class="card reveal">
+              <h3>Scheduler Automation</h3>
+              <p>项目级 Cron 统一托管 cleanup、issue auto-run、skill promotion、global skill promotion。</p>
+            </article>
+            <article class="card reveal">
+              <h3>Skill Governance</h3>
+              <p>技能候选可走独立 Draft PR 人审链路，与需求交付 DAG 解耦，避免主流程被治理动作拖慢。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <span class="section-label reveal">How It Works</span>
+          <h2 class="reveal">从 GitHub Issue 到合并收尾的标准路径</h2>
+          <div class="flow">
+            <article class="flow-item reveal">
+              <span class="flow-index">1</span>
+              <div>
+                <h3>创建或接收 Issue</h3>
+                <p>Issue 是 run 的唯一需求入口，可按 `quick` / `standard` 标签路由执行模式。</p>
+              </div>
+            </article>
+            <article class="flow-item reveal">
+              <span class="flow-index">2</span>
+              <div>
+                <h3>创建 Run 并绑定 Worktree</h3>
+                <p>系统为 run 创建独立目录 `<repo>/.forgeops/worktrees/<runId>` 与 `forgeops/<runId>` 分支。</p>
+              </div>
+            </article>
+            <article class="flow-item reveal">
+              <span class="flow-index">3</span>
+              <div>
+                <h3>按 DAG 调度 Step</h3>
+                <p>Worker 认领可执行节点并运行，状态与事件通过 API + SSE 实时输出到仪表盘。</p>
+              </div>
+            </article>
+            <article class="flow-item reveal">
+              <span class="flow-index">4</span>
+              <div>
+                <h3>执行 Gate 与自愈</h3>
+                <p>在关键步骤后执行不变量和平台验收，配置允许时可触发预算内自动修复回合。</p>
+              </div>
+            </article>
+            <article class="flow-item reveal">
+              <span class="flow-index">5</span>
+              <div>
+                <h3>PR 合并与清理归档</h3>
+                <p>按 `workflow.yaml` 策略自动合并、回写 issue 状态，并尝试清理 run worktree 与本地分支。</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <span class="section-label reveal">Highlights</span>
+          <h2 class="reveal">可证实能力摘录（来自仓库文档）</h2>
+          <div class="highlights">
+            <article class="highlight reveal">
+              <b>Node.js 22+</b>
+              <span>控制面运行环境有明确版本门槛与启动前 precheck。</span>
+            </article>
+            <article class="highlight reveal">
+              <b>SSE Live Status</b>
+              <span>run/step/session/events/artifacts 全链路状态实时推送。</span>
+            </article>
+            <article class="highlight reveal">
+              <b>Platform Smoke</b>
+              <span>支持按产品类型注入真实运行态 smoke 命令并采集证据。</span>
+            </article>
+            <article class="highlight reveal">
+              <b>业务指标</b>
+              <span>真实部署规模与量化收益：<strong>待补充</strong>。</span>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="docs">
+        <div class="wrap">
+          <div class="cta-block reveal">
+            <span class="section-label">Start From Facts</span>
+            <h2>把经验写成机制，才是 Harness Engineering 的起点</h2>
+            <p>
+              这个页面使用了 ForgeOps 仓库中可核实的事实（README、Architecture、Harness 指南、User Guide）。
+              如果你要继续扩展为官网版本，建议先补齐“真实运行指标、用户案例、部署链接”三类证据，再做下一轮视觉深化。
+            </p>
+            <div class="hero-actions" style="margin-top: 1.25rem">
+              <a class="btn btn-primary" href="./README.md">查看 README</a>
+              <a class="btn btn-ghost" href="./docs/00-index.md">打开文档地图</a>
+            </div>
+            <div class="cta-links">
+              <a class="doc-link" href="./Harness%20Engineering.md">Harness Engineering.md</a>
+              <a class="doc-link" href="./docs/architecture/00-overview.md">architecture/00-overview.md</a>
+              <a class="doc-link" href="./docs/user-guide.md">docs/user-guide.md</a>
+              <a class="doc-link" href="./docs/harness-engineering-guidelines.md">docs/harness-engineering-guidelines.md</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        ForgeOps · Harness Engineering · Runtime-Agnostic AI R&D Control Plane
+      </div>
+    </footer>
+
+    <script>
+      (() => {
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const revealNodes = document.querySelectorAll(".reveal");
+        if (reducedMotion || !("IntersectionObserver" in window)) {
+          revealNodes.forEach((node) => node.classList.add("in"));
+          return;
+        }
+
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("in");
+                observer.unobserve(entry.target);
+              }
+            });
+          },
+          { threshold: 0.16, rootMargin: "0px 0px -8% 0px" }
+        );
+
+        revealNodes.forEach((node, index) => {
+          node.style.transitionDelay = `${Math.min(index * 40, 220)}ms`;
+          observer.observe(node);
+        });
+      })();
+    </script>
+  </body>
+</html>

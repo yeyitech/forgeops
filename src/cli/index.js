@@ -112,7 +112,7 @@ function parseBool(value, fallback = null) {
   return fallback;
 }
 
-function normalizeRunModeFlag(value, fallback = "standard") {
+function normalizeRunModeFlag(value, fallback = "quick") {
   const text = String(value ?? "").trim().toLowerCase();
   if (!text) return fallback;
   if (text === "standard" || text === "quick") {
@@ -427,12 +427,14 @@ async function commandIssue(store, args) {
     const autoRun = !args.includes("--no-auto-run");
     const modeRaw = args.includes("--quick")
       ? "quick"
-      : String(getFlag(args, "--mode", "standard") ?? "standard").trim().toLowerCase();
-    const runMode = normalizeRunModeFlag(modeRaw, "standard");
+      : String(getFlag(args, "--mode", "quick") ?? "quick").trim().toLowerCase();
+    const runMode = normalizeRunModeFlag(modeRaw, "quick");
     if (!runMode) {
       fail("--mode must be one of: quick, standard");
     }
-    const labels = runMode === "quick" ? ["forgeops:quick"] : [];
+    const labels = runMode === "standard"
+      ? ["forgeops:standard"]
+      : ["forgeops:quick"];
     const created = store.createIssueWithAutoRun({
       projectId,
       title,
@@ -450,7 +452,7 @@ async function commandIssue(store, args) {
     } else {
       process.stdout.write("Auto-run: disabled\n");
     }
-    process.stdout.write(`Issue mode label: ${runMode === "quick" ? "forgeops:quick" : "default"}\n`);
+    process.stdout.write(`Issue mode label: ${runMode === "quick" ? "forgeops:quick" : "forgeops:standard"}\n`);
     return;
   }
 
@@ -669,7 +671,7 @@ async function commandRun(store, args) {
     if (!issueId) {
       fail("Usage: forgeops run create <projectId> [task] --issue GITHUB_ISSUE_NUMBER [--mode quick|standard]");
     }
-    const runMode = normalizeRunModeFlag(getFlag(args, "--mode", "standard"), "standard");
+    const runMode = normalizeRunModeFlag(getFlag(args, "--mode", "quick"), "quick");
     if (!runMode) {
       fail("--mode must be one of: quick, standard");
     }
@@ -1453,6 +1455,75 @@ function resolveManagedProjectByPath(store, cwd) {
   return matched;
 }
 
+function findProjectMetaSkillDescriptor(resolvedSkills) {
+  const preferredRoles = ["developer", "tester", "reviewer"];
+  const roleMap = resolvedSkills?.agentSkills && typeof resolvedSkills.agentSkills === "object"
+    ? resolvedSkills.agentSkills
+    : {};
+
+  const matchFromItems = (items) => {
+    const list = Array.isArray(items) ? items : [];
+    for (const item of list) {
+      const name = String(item?.name ?? "").trim().toLowerCase();
+      const source = String(item?.source ?? "").trim().toLowerCase();
+      const absolutePath = String(item?.absolutePath ?? "").trim();
+      if (!name.startsWith("project-meta-")) continue;
+      if (source !== "project-local") continue;
+      if (!absolutePath || !fs.existsSync(absolutePath)) continue;
+      return absolutePath;
+    }
+    return "";
+  };
+
+  for (const role of preferredRoles) {
+    const matched = matchFromItems(roleMap[role]);
+    if (matched) return matched;
+  }
+
+  for (const role of Object.keys(roleMap)) {
+    const matched = matchFromItems(roleMap[role]);
+    if (matched) return matched;
+  }
+
+  return "";
+}
+
+function resolveDefaultProjectMetaSkillPath(store, project) {
+  const projectRoot = path.resolve(String(project?.root_path ?? ""));
+  const productType = String(project?.product_type ?? "").trim().toLowerCase();
+
+  if (project?.id) {
+    try {
+      const resolved = store.resolveProjectSkills(project.id);
+      const fromResolved = findProjectMetaSkillDescriptor(resolved);
+      if (fromResolved) {
+        return fromResolved;
+      }
+    } catch {
+      // fallback to deterministic path probing
+    }
+  }
+
+  const candidates = [];
+  if (projectRoot && productType) {
+    candidates.push(path.join(projectRoot, ".forgeops", "skills", `project-meta-${productType}-copilot`, "SKILL.md"));
+  }
+  if (projectRoot) {
+    candidates.push(path.join(projectRoot, ".forgeops", "skills", "project-meta-generic-copilot", "SKILL.md"));
+  }
+  candidates.push(DEFAULT_META_SKILL_PATH);
+
+  for (const candidate of candidates) {
+    const resolved = path.resolve(String(candidate ?? "").trim());
+    if (!resolved) continue;
+    if (fs.existsSync(resolved)) {
+      return resolved;
+    }
+  }
+
+  return "";
+}
+
 function resolveCodexSessionTrackingKey(cwd, sessionKey) {
   const explicitKey = String(sessionKey ?? "").trim();
   if (explicitKey) {
@@ -1657,7 +1728,7 @@ function buildMetaSkillBootstrapPrompt(params = {}) {
   lines.push("默认使用 ForgeOps CLI 完成探测、执行、恢复与验证，不绕过主路径。");
 
   if (includeMetaSkill && metaSkillPath) {
-    lines.push(`先完整阅读并严格遵循元技能文档：${metaSkillPath}`);
+    lines.push(`先完整阅读并严格遵循 ForgeOps 技能文档：${metaSkillPath}`);
     lines.push("执行时遵守其中的执行原则、命令剧本、决策规则与禁止事项。");
   }
 
@@ -1669,7 +1740,7 @@ function buildMetaSkillBootstrapPrompt(params = {}) {
     lines.push(userPrompt);
   } else {
     lines.push("");
-    lines.push("先回一句：已进入 ForgeOps 元技能会话，等待任务指令。");
+    lines.push("先回一句：已进入 ForgeOps 技能会话，等待任务指令。");
   }
 
   return lines.join("\n");
@@ -1708,8 +1779,8 @@ function buildProjectBootstrapPrompt(params = {}) {
   lines.push("- quick：单点修复、小范围重构、配置/脚本调整、文档更新、低风险回归验证。");
   lines.push("- standard：跨模块改造、架构变更、数据模型/迁移、接口契约变化、权限/安全相关、需要完整评审链路。");
   lines.push("不确定时默认 quick；一旦发现影响面扩大或验收风险上升，升级到 standard。");
-  lines.push("执行时必须显式带模式参数：`forgeops run create ... --mode quick|standard`。");
-  lines.push("若先创建 issue，quick 场景优先使用：`forgeops issue create ... --mode quick`。");
+  lines.push("执行时可显式带模式参数：`forgeops run create ... --mode quick|standard`（未指定时默认 quick）。");
+  lines.push("若先创建 issue，可显式声明：`forgeops issue create ... --mode quick|standard`（未指定时默认 quick）。");
   if (localOnly) {
     lines.push("当前会话运行在 LOCAL_ONLY 模式。");
     lines.push("禁止执行流水线命令：`forgeops issue create/list`、`forgeops run create/list/show/stop/resume/attach`。");
@@ -1718,8 +1789,8 @@ function buildProjectBootstrapPrompt(params = {}) {
   }
 
   if (includeMetaSkill && metaSkillPath) {
-    lines.push(`先完整阅读并遵循元技能文档：${metaSkillPath}`);
-    lines.push("在不和项目上下文冲突的前提下执行元技能约束。");
+    lines.push(`先完整阅读并遵循 ForgeOps 技能文档：${metaSkillPath}`);
+    lines.push("在不和项目上下文冲突的前提下执行 ForgeOps 技能约束。");
   }
 
   lines.push(`当前项目：${projectName || "(unnamed)"} (${projectId || "unknown"})`);
@@ -1774,10 +1845,17 @@ async function commandCodex(_store, args) {
     );
     return;
   }
-  const action = !head || head.startsWith("-") ? "session" : head;
-  const commandArgs = (action === "session" && head === "session") || (action === "project" && head === "project")
-    ? args.slice(1)
-    : args;
+  const actionExplicit = head === "session" || head === "project";
+  const probeCommandArgs = actionExplicit ? args.slice(1) : args;
+  const probeCwd = path.resolve(String(getFlag(probeCommandArgs, "--cwd", "") ?? "").trim() || process.cwd());
+  const autoMatchedProject = (!actionExplicit && (!head || head.startsWith("-")))
+    ? resolveManagedProjectByPath(_store, probeCwd)
+    : null;
+  const action = actionExplicit
+    ? head
+    : ((!head || head.startsWith("-")) && autoMatchedProject ? "project" : "session");
+  const commandArgs = actionExplicit ? args.slice(1) : args;
+  const actionAutoDetectedByCwd = !actionExplicit && action === "project" && Boolean(autoMatchedProject);
 
   if (action !== "session" && action !== "project") {
     fail("Usage: forgeops codex session [--client auto|app|cli] [--session-key KEY] [--cwd DIR] [--prompt TEXT] [--model MODEL] [--meta-skill PATH] [--no-meta-skill] [--fresh]\n"
@@ -1803,7 +1881,7 @@ async function commandCodex(_store, args) {
         fail(`--cwd is outside project root: cwd=${projectLookupCwd} root=${projectScope.root_path}`);
       }
     } else {
-      projectScope = resolveManagedProjectByPath(_store, projectLookupCwd);
+      projectScope = autoMatchedProject ?? resolveManagedProjectByPath(_store, projectLookupCwd);
       if (!projectScope) {
         fail(`No managed project found for cwd: ${projectLookupCwd}\nHint: run in project dir, or pass --project PROJECT_ID.`);
       }
@@ -1830,14 +1908,29 @@ async function commandCodex(_store, args) {
     fail("--client must be one of: auto, app, cli");
   }
 
-  const includeMetaSkillByDefault = action !== "project";
+  const includeMetaSkillByDefault = true;
+  const explicitMetaSkillPath = String(getFlag(commandArgs, "--meta-skill", "") ?? "").trim();
+  const projectDefaultMetaSkillPath = action === "project" && projectScope
+    ? resolveDefaultProjectMetaSkillPath(_store, projectScope)
+    : "";
+  const metaSkillPathFallback = action === "project"
+    ? (projectDefaultMetaSkillPath || DEFAULT_META_SKILL_PATH)
+    : DEFAULT_META_SKILL_PATH;
+  const resolvedMetaSkillPath = explicitMetaSkillPath || metaSkillPathFallback;
   const includeMetaSkill = commandArgs.includes("--no-meta-skill")
     ? false
     : (commandArgs.includes("--meta-skill") ? true : includeMetaSkillByDefault);
-  const metaSkillPath = path.resolve(getFlag(commandArgs, "--meta-skill", DEFAULT_META_SKILL_PATH));
+  const metaSkillPath = path.resolve(resolvedMetaSkillPath);
   if (includeMetaSkill && !fs.existsSync(metaSkillPath)) {
-    fail(`Meta skill not found: ${metaSkillPath}`);
+    fail(`ForgeOps skill not found: ${metaSkillPath}`);
   }
+  const metaSkillSource = !includeMetaSkill
+    ? "disabled"
+    : (explicitMetaSkillPath
+      ? "explicit"
+      : (action === "project" && projectDefaultMetaSkillPath
+        ? "project-default"
+        : "forgeops-default"));
   const localOnly = action === "project" && commandArgs.includes("--local-only");
   if (action !== "project" && commandArgs.includes("--local-only")) {
     fail("--local-only is only supported by: forgeops codex project");
@@ -1872,6 +1965,7 @@ async function commandCodex(_store, args) {
 
   process.stdout.write("Starting ForgeOps Codex session entry…\n");
   process.stdout.write(`- agent-profile: ${action === "project" ? "project-copilot" : "forgeops-coach"}\n`);
+  process.stdout.write(`- entry-action: ${action}${actionAutoDetectedByCwd ? " (auto-detected by managed project cwd)" : ""}\n`);
   if (projectScope) {
     process.stdout.write(`- project: ${projectScope.id} (${projectScope.name})\n`);
   }
@@ -1882,6 +1976,7 @@ async function commandCodex(_store, args) {
   process.stdout.write(`- tracked-thread: ${tracked?.threadId ?? "(none)"}\n`);
   process.stdout.write(`- fresh: ${freshStart ? "true" : "false"}\n`);
   process.stdout.write(`- meta-skill: ${includeMetaSkill ? metaSkillPath : "disabled"}\n`);
+  process.stdout.write(`- meta-skill-source: ${metaSkillSource}\n`);
   process.stdout.write(`- local-only: ${localOnly ? "true" : "false"}\n`);
   process.stdout.write(`- model: ${model || "(codex default)"}\n`);
 

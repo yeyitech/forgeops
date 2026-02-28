@@ -20,11 +20,39 @@ ForgeOps 是一个面向 AI 研发流程的控制平面（Control Plane），核
 - Garbage Collection（熵增治理）
 
 每个角色可挂载多个技能（Skill），例如 `developer` 可同时挂载 `frontend`、`backend`、`fullstack` 技能。
+`project init` 时会自动注入“项目级 ForgeOps 技能”到 `developer/tester/reviewer`：
+- `web` 项目注入 `project-meta-web-copilot`
+- `microservice` 项目注入 `project-meta-microservice-copilot`
+- `miniapp` 项目注入 `project-meta-miniapp-copilot`
+- `ios` 项目注入 `project-meta-ios-copilot`
+- `android` 项目注入 `project-meta-android-copilot`
+- `serverless` 项目注入 `project-meta-serverless-copilot`
+- `other` 项目注入 `project-meta-other-copilot`
 
 ## 快速入口
 
-- `FORGEOPS_META_SKILL.md`：面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略，含 `project init` 默认自动打开 Dashboard 与 `--no-open-ui` 约束）。
+- `FORGEOPS_META_SKILL.md`：面向 Agent 的 ForgeOps CLI 技能文档（控制面操作剧本与恢复策略，含 `project init` 默认自动打开 Dashboard 与 `--no-open-ui` 约束）。
+- `scripts/install-forgeops-skill.sh`：把 `FORGEOPS_META_SKILL.md` 安装到本机 Agent skills 目录（默认 `codex + claude`，支持自定义路径）。
 - `docs/00-index.md`：文档地图与任务导航。
+
+## ForgeOps 技能安装（多 Agent）
+
+```bash
+# 仅预览安装目标（不写文件）
+bash scripts/install-forgeops-skill.sh --dry-run
+
+# 默认安装到 Codex + Claude
+bash scripts/install-forgeops-skill.sh
+
+# 安装到内置全部目标（codex + claude + gemini）
+bash scripts/install-forgeops-skill.sh --all
+
+# 给其他 Agent 指定 skills 根目录
+bash scripts/install-forgeops-skill.sh --skills-root /path/to/agent/skills
+
+# 用软链接模式安装（便于后续随仓库内容自动更新）
+bash scripts/install-forgeops-skill.sh --mode link --force
+```
 
 ## 环境要求
 
@@ -60,7 +88,6 @@ forgeops project init --name my-project --type web --path /abs/path/to/my-projec
 
 初始化后会生成：
 
-- `official-skills/skills/<skill-name>/SKILL.md`：ForgeOps 仓内预置的官方技能模板源（初始化时按需下发到项目）
 - `.forgeops/agent-skills.json`：角色 -> 技能清单映射
 - `.forgeops/skills/<skill-name>/SKILL.md`：遵循技能规范的技能目录
 - `.forgeops/governance.md`：硬边界与软约束、最小阻塞 gate 的治理策略
@@ -70,6 +97,8 @@ forgeops project init --name my-project --type web --path /abs/path/to/my-projec
 - `.forgeops/scheduler.yaml`：项目级 Cron 调度配置（cleanup / issue auto-run / skill auto-promotion）
 - `.forgeops/tools/platform-preflight.mjs`：产品类型工具链预检查脚本
 - `.forgeops/tools/platform-smoke.mjs`：平台运行态 smoke 验收脚本
+
+说明：`official-skills/skills/<skill-name>/SKILL.md` 属于 ForgeOps 仓内自带模板源，不会作为业务项目初始化产物直接写入目标项目根目录。
 
 2. 启动 ForgeOps 控制面：
 
@@ -489,7 +518,8 @@ forgeops doctor --json
 说明：
 - `forgeops issue create/list` 直接操作 GitHub Issue，不再使用本地 issue 管理。
 - `forgeops issue create` 默认会自动触发一个关联 run；可通过 `--no-auto-run` 关闭。
-- `forgeops issue create --mode quick` 会给 Issue 打上 `forgeops:quick` 标签，自动 run 走 quick 模式。
+- `forgeops issue create` / `forgeops run create` 未显式指定 `--mode` 时默认走 `quick`。
+- `forgeops issue create --mode quick|standard` 会分别打上 `forgeops:quick` / `forgeops:standard` 标签，自动 run 与后续 scheduler 均按标签路由模式。
 - `forgeops issue create` 创建的 issue 会自动附加 `forgeops:ready` 标签（run 启动后会自动切换为 `forgeops:running`）。
 - `forgeops skill candidates/promote` 是独立技能治理链路，不会插入或阻塞标准需求 run DAG。
 - Scheduler 已支持独立技能治理 job：`skillPromotion`（项目内）与 `globalSkillPromotion`（user-global），定时扫描候选并自动提/更新 Draft PR。
@@ -500,7 +530,7 @@ forgeops doctor --json
 - `forgeops run create` 的 `task` 参数可选；缺省时会按 Issue 自动生成任务文案。
 - `forgeops run create --mode quick|standard` 可选择执行模式：
   - `quick`：优先只走 `implement -> test -> cleanup`（若项目 workflow 不含这些 step，会自动回落 `standard`）。
-  - `standard`：默认模式，按项目 workflow 正常执行。
+  - `standard`：按项目 workflow 正常执行（通常用于高风险/跨模块改动）。
 - `forgeops run stop` 会把运行中的 run 置为 `paused`，并优先通过 `SIGSTOP` 冻结当前执行会话（不中断 thread）。
 - `forgeops run resume` 同时支持两类恢复：
   - `failed` run：按失败 step 重排并重试；
@@ -516,14 +546,17 @@ forgeops doctor --json
 - Codex 交互入口分为两个角色：
   - `forgeops codex session`：ForgeOps 使用助手（偏平台流程与命令使用），默认在 ForgeOps 仓库根目录启动，并维护可复用 thread id。
   - `forgeops codex project`：项目协作助手（偏具体项目推进），在项目上下文里继续工作并复用项目线程。
+- `forgeops codex`（不带子命令）会按当前 `cwd` 自动路由：
+  - 若命中已托管项目目录，自动按 `project` 模式启动；
+  - 否则按 `session` 模式启动。
 - `forgeops codex session --session-key forgeops-meta` 可显式指定追踪 key（默认即 `forgeops-meta`）；同 key 会复用同一 thread。
 - `forgeops codex project` 面向“进入具体项目后继续开发”的场景：
   - 默认根据当前 `cwd` 自动匹配已托管项目（也可显式传 `--project`）；
   - 默认在项目根目录启动会话，并使用 `session-key=project:<projectId>` 追踪项目线程；
   - 首次启动会把 `.forgeops/context.md` 与 `.forgeops/governance.md` 摘要注入启动提示，确保带着项目上下文进入会话；
-  - 启动提示内置 run mode 路由规则（`quick` vs `standard`），并要求创建 run 时显式传 `--mode`；
+  - 启动提示内置 run mode 路由规则（`quick` vs `standard`），未指定时默认 `quick`；
   - `--local-only`：本地直改模式，只允许代码/测试/文档操作，禁止触发 `forgeops issue *` 和 `forgeops run *` 流水线命令；
-  - 默认不注入 `FORGEOPS_META_SKILL.md`，避免覆盖项目自身上下文；如需注入可传 `--meta-skill PATH`。
+  - 默认注入项目级 ForgeOps 技能（优先 `.forgeops/skills/project-meta-<productType>-copilot/SKILL.md`，缺失时回退 `project-meta-generic-copilot`，再回退 `FORGEOPS_META_SKILL.md`）；可用 `--no-meta-skill` 关闭，或用 `--meta-skill PATH` 覆盖。
 - `forgeops codex session --client auto` 默认策略：优先保证“同一 tracked thread 可恢复”（走 CLI `resume`）；避免误开新会话。
 - `forgeops codex session --fresh` / `forgeops codex project --fresh`：强制忽略当前 tracked thread，启动全新会话；会话结束后会把新 thread 写回追踪映射。
 - `forgeops codex session --client app` 为显式 App 模式：会打开 Codex App，但当前 CLI 能力无法按 thread id 直接定位到指定会话（可能进入新会话或需手动切换）。

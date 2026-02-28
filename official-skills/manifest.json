@@ -5,9 +5,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-web-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-frontend-web", "developer-backend-web", "developer-fullstack-web"],
-        "tester": ["tester-web-quality-gate"],
-        "reviewer": ["reviewer-web-merge-governance"],
+        "developer": ["project-meta-web-copilot", "developer-frontend-web", "developer-backend-web", "developer-fullstack-web"],
+        "tester": ["project-meta-web-copilot", "tester-web-quality-gate"],
+        "reviewer": ["project-meta-web-copilot", "reviewer-web-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
@@ -15,9 +15,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-miniapp-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-miniapp-frontend", "developer-miniapp-backend", "developer-miniapp-fullstack"],
-        "tester": ["tester-miniapp-quality-gate"],
-        "reviewer": ["reviewer-miniapp-merge-governance"],
+        "developer": ["project-meta-miniapp-copilot", "developer-miniapp-frontend", "developer-miniapp-backend", "developer-miniapp-fullstack"],
+        "tester": ["project-meta-miniapp-copilot", "tester-miniapp-quality-gate"],
+        "reviewer": ["project-meta-miniapp-copilot", "reviewer-miniapp-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
@@ -25,9 +25,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-ios-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-ios-app", "developer-ios-backend", "developer-ios-fullstack"],
-        "tester": ["tester-ios-quality-gate"],
-        "reviewer": ["reviewer-ios-merge-governance"],
+        "developer": ["project-meta-ios-copilot", "developer-ios-app", "developer-ios-backend", "developer-ios-fullstack"],
+        "tester": ["project-meta-ios-copilot", "tester-ios-quality-gate"],
+        "reviewer": ["project-meta-ios-copilot", "reviewer-ios-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
@@ -35,9 +35,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-microservice-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-microservice-python"],
-        "tester": ["tester-microservice-quality-gate"],
-        "reviewer": ["reviewer-microservice-merge-governance"],
+        "developer": ["project-meta-microservice-copilot", "developer-microservice-python"],
+        "tester": ["project-meta-microservice-copilot", "tester-microservice-quality-gate"],
+        "reviewer": ["project-meta-microservice-copilot", "reviewer-microservice-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
@@ -45,9 +45,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-android-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-android-app", "developer-android-backend"],
-        "tester": ["tester-android-quality-gate"],
-        "reviewer": ["reviewer-android-merge-governance"],
+        "developer": ["project-meta-android-copilot", "developer-android-app", "developer-android-backend"],
+        "tester": ["project-meta-android-copilot", "tester-android-quality-gate"],
+        "reviewer": ["project-meta-android-copilot", "reviewer-android-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
@@ -55,9 +55,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-serverless-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-serverless-backend"],
-        "tester": ["tester-serverless-quality-gate"],
-        "reviewer": ["reviewer-serverless-merge-governance"],
+        "developer": ["project-meta-serverless-copilot", "developer-serverless-backend"],
+        "tester": ["project-meta-serverless-copilot", "tester-serverless-quality-gate"],
+        "reviewer": ["project-meta-serverless-copilot", "reviewer-serverless-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
@@ -65,9 +65,9 @@
       "roles": {
         "architect": ["architect-scope-planning", "architect-web-solution"],
         "issue-manager": ["issue-structured-spec"],
-        "developer": ["developer-fullstack-web"],
-        "tester": ["tester-web-quality-gate"],
-        "reviewer": ["reviewer-merge-governance"],
+        "developer": ["project-meta-other-copilot", "developer-fullstack-web"],
+        "tester": ["project-meta-other-copilot", "tester-web-quality-gate"],
+        "reviewer": ["project-meta-other-copilot", "reviewer-merge-governance"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     }

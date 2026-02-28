@@ -1,7 +1,13 @@
 # Codex 运行机制与长会话压缩深度调研
 
 Status: Active
-Updated: 2026-02-26
+Updated: 2026-03-01
+
+## 文档定位
+
+- 本文档用于设计与演进讨论，可能包含“目标态/候选方案”。
+- 当前已落地行为以代码与 `docs/quality/verification-status.md` 为准。
+- 若文档与代码冲突，请在同一 PR 同步修正文档。
 
 ## 目的与范围
 

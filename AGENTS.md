@@ -25,8 +25,10 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
   - 面向用户的操作手册（启动、模式选择、常见流程与排障）。
 - `docs/user-quickstart.md`
   - 面向用户的 1 页上手卡（最小命令集与模式选择规则）。
+- `docs/project-init-user-guide.md`
+  - 面向用户解释 `forgeops project init` 在初始化期间具体执行的动作与结果。
 - `FORGEOPS_META_SKILL.md`
-  - 面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略）。
+  - 面向 Agent 的 ForgeOps CLI 技能（控制面操作剧本与恢复策略）。
 - `docs/00-index.md`
   - docs 目录地图与任务导航。
 

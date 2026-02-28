@@ -1,7 +1,7 @@
 # 文档地图（Docs Index）
 
 Status: Active
-Updated: 2026-02-27
+Updated: 2026-03-01
 
 ## 目的
 
@@ -16,7 +16,7 @@ Updated: 2026-02-27
 ## 仓库级入口（非 docs 目录）
 
 - `FORGEOPS_META_SKILL.md`
-  - 面向 Agent 的 ForgeOps CLI 元技能（控制面操作剧本与恢复策略，含 `project init` 默认自动打开 Dashboard 与 `--no-open-ui` 约束）。
+  - 面向 Agent 的 ForgeOps CLI 技能（控制面操作剧本与恢复策略，含 `project init` 默认自动打开 Dashboard 与 `--no-open-ui` 约束）。
 
 ## 目录索引
 
@@ -26,6 +26,8 @@ Updated: 2026-02-27
   - 面向用户的 1 页上手卡（最小命令集与模式选择规则）。
 - `docs/user-guide.md`
   - 面向用户的操作手册（启动、模式选择、典型流程与故障排查）。
+- `docs/project-init-user-guide.md`
+  - 面向用户解释 `forgeops project init` 具体做什么（校验、脚手架、GitHub 绑定、Store 注册）。
 
 ### 架构层（Architecture）
 

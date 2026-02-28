@@ -1,7 +1,13 @@
 # 技能群体进化中心服务设计（Opt-in）
 
 Status: Active
-Updated: 2026-02-25
+Updated: 2026-03-01
+
+## 文档定位
+
+- 本文档用于设计与演进讨论，可能包含“目标态/候选方案”。
+- 当前已落地行为以代码与 `docs/quality/verification-status.md` 为准。
+- 若文档与代码冲突，请在同一 PR 同步修正文档。
 
 ## 目标
 

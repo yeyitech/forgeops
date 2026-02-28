@@ -1,7 +1,13 @@
 # 平台工具链预检查与 Platform Gate 设计
 
 Status: Active
-Updated: 2026-02-26
+Updated: 2026-03-01
+
+## 文档定位
+
+- 本文档用于设计与演进讨论，可能包含“目标态/候选方案”。
+- 当前已落地行为以代码与 `docs/quality/verification-status.md` 为准。
+- 若文档与代码冲突，请在同一 PR 同步修正文档。
 
 ## 背景与问题
 
@@ -65,7 +71,7 @@ Updated: 2026-02-26
 设计意图：
 
 - `test`：同时覆盖代码/契约验证（CI Gate）与平台运行态验证（Platform Gate）
-- `platform-smoke`：保留为可选扩展步骤（需要独立平台闸门时可显式启用）
+- `platform-smoke`：仅作为历史配置兼容别名，解析时会映射到 `test`（不再作为独立步骤执行）
 - `review`：在闸门结论基础上做合并决策
 
 ## 4) Run 双闸门状态模型

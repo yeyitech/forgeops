@@ -16,14 +16,17 @@
       "issue-structured-spec"
     ],
     "developer": [
+      "project-meta-web-copilot",
       "developer-frontend-web",
       "developer-backend-web",
       "developer-fullstack-web"
     ],
     "tester": [
+      "project-meta-web-copilot",
       "tester-web-quality-gate"
     ],
     "reviewer": [
+      "project-meta-web-copilot",
       "reviewer-web-merge-governance"
     ],
     "garbage-collector": [

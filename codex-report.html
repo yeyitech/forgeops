@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Runtime Report | ForgeOps</title>
+    <meta
+      name="description"
+      content="基于 ForgeOps 文档生成的 Codex 运行时策略报告：Prompt 注入链、长会话机制、LiveView 契约、稳定性落地路线与 Follow/Not Fork 边界。"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;family=Noto+Sans+SC:wght@400;500;700&amp;family=Space+Grotesk:wght@500;700&amp;display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-0: #070c12;
+        --bg-1: #0d1520;
+        --bg-2: #131f2f;
+        --panel: rgba(14, 24, 37, 0.66);
+        --panel-soft: rgba(17, 29, 45, 0.44);
+        --line: rgba(220, 230, 243, 0.18);
+        --line-strong: rgba(220, 230, 243, 0.32);
+        --text-1: #f1f5fb;
+        --text-2: #b7c2d3;
+        --text-3: #8d9bb1;
+        --accent: #ff7a45;
+        --accent-soft: rgba(255, 122, 69, 0.2);
+        --ok: #19c08f;
+        --warn: #f2bc4f;
+        --danger: #f46a6a;
+        --space-1: clamp(0.45rem, 0.35rem + 0.3vw, 0.72rem);
+        --space-2: clamp(0.78rem, 0.58rem + 0.6vw, 1.1rem);
+        --space-3: clamp(1.1rem, 0.8rem + 0.9vw, 1.7rem);
+        --space-4: clamp(1.6rem, 1rem + 1.5vw, 2.6rem);
+        --space-5: clamp(2.3rem, 1.4rem + 2.2vw, 4.1rem);
+        --space-6: clamp(3rem, 1.9rem + 2.9vw, 5.8rem);
+        --radius-sm: 0.6rem;
+        --radius-md: 0.95rem;
+        --radius-lg: 1.35rem;
+        --shadow: 0 18px 42px rgba(2, 8, 18, 0.38);
+        --dur-fast: 180ms;
+        --dur-base: 360ms;
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        font-family: "Noto Sans SC", sans-serif;
+        color: var(--text-1);
+        background:
+          radial-gradient(80rem 50rem at 88% -16%, rgba(255, 122, 69, 0.26), transparent 62%),
+          radial-gradient(54rem 34rem at -14% 98%, rgba(25, 192, 143, 0.2), transparent 58%),
+          linear-gradient(180deg, #0f1825 0%, var(--bg-0) 60%);
+        line-height: 1.6;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: -1;
+        opacity: 0.44;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+        background-size: 1.8rem 1.8rem;
+        mask-image: radial-gradient(circle at 50% 8%, black 26%, transparent 74%);
+      }
+
+      :focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--accent), white 20%);
+        outline-offset: 2px;
+      }
+
+      .container {
+        width: min(74rem, calc(100% - 2rem));
+        margin-inline: auto;
+      }
+
+      .skip-link {
+        position: absolute;
+        left: 1rem;
+        top: -3rem;
+        background: var(--accent);
+        color: #1d130f;
+        border-radius: var(--radius-sm);
+        padding: 0.45rem 0.72rem;
+        text-decoration: none;
+        font-weight: 700;
+        z-index: 60;
+      }
+
+      .skip-link:focus-visible {
+        top: 0.9rem;
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px) saturate(118%);
+        -webkit-backdrop-filter: blur(10px) saturate(118%);
+        background: linear-gradient(
+          180deg,
+          rgba(7, 12, 18, 0.9) 0%,
+          rgba(7, 12, 18, 0.72) 64%,
+          rgba(7, 12, 18, 0.2) 100%
+        );
+      }
+
+      .header-row {
+        min-height: 3.4rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-2);
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        text-decoration: none;
+        color: var(--text-1);
+        font-family: "Space Grotesk", sans-serif;
+        letter-spacing: 0.02em;
+      }
+
+      .brand-mark {
+        width: 1.3rem;
+        aspect-ratio: 1;
+        border-radius: 0.35rem;
+        border: 1px solid color-mix(in srgb, var(--accent), transparent 45%);
+        background:
+          linear-gradient(145deg, rgba(255, 122, 69, 0.92), rgba(255, 122, 69, 0.2)),
+          rgba(255, 122, 69, 0.16);
+      }
+
+      nav ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        gap: 0.35rem;
+      }
+
+      nav a {
+        text-decoration: none;
+        color: var(--text-2);
+        font-size: 0.9rem;
+        padding: 0.38rem 0.58rem;
+        border-radius: 0.5rem;
+      }
+
+      nav a:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text-1);
+      }
+
+      .hero {
+        padding-top: var(--space-6);
+      }
+
+      .hero-shell {
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.11), transparent 35%),
+          var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(11px) saturate(122%);
+        -webkit-backdrop-filter: blur(11px) saturate(122%);
+        padding: clamp(1.2rem, 0.7rem + 1.9vw, 2.6rem);
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero-shell::after {
+        content: "";
+        position: absolute;
+        width: 18rem;
+        height: 18rem;
+        right: -8rem;
+        top: -10rem;
+        border-radius: 50%;
+        background: radial-gradient(circle at 45% 45%, rgba(255, 122, 69, 0.42), transparent 66%);
+        filter: blur(24px);
+      }
+
+      .eyebrow {
+        margin: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.76rem;
+        letter-spacing: 0.05em;
+        border: 1px solid color-mix(in srgb, var(--accent), transparent 58%);
+        border-radius: 999px;
+        padding: 0.28rem 0.62rem;
+        background: var(--accent-soft);
+        color: color-mix(in srgb, var(--accent), white 18%);
+      }
+
+      h1 {
+        margin: var(--space-2) 0 var(--space-2);
+        font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+        font-size: clamp(1.9rem, 1.1rem + 2.5vw, 3.3rem);
+        line-height: 1.14;
+        max-width: 20ch;
+      }
+
+      .hero p {
+        margin: 0;
+        color: var(--text-2);
+        max-width: 70ch;
+      }
+
+      .facts {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--space-1);
+      }
+
+      .fact {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--panel-soft);
+        padding: 0.58rem 0.64rem;
+      }
+
+      .fact b {
+        display: block;
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 1.03rem;
+      }
+
+      .fact span {
+        color: var(--text-3);
+        font-size: 0.8rem;
+      }
+
+      section.report {
+        margin-top: var(--space-6);
+      }
+
+      .section-head {
+        margin-bottom: var(--space-3);
+      }
+
+      .section-head .tag {
+        display: inline-flex;
+        padding: 0.23rem 0.58rem;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--ok), transparent 62%);
+        color: var(--ok);
+        background: rgba(25, 192, 143, 0.18);
+        font-size: 0.74rem;
+      }
+
+      h2 {
+        margin: 0.5rem 0 0.35rem;
+        font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+        font-size: clamp(1.36rem, 1.02rem + 1.3vw, 2.05rem);
+      }
+
+      .section-head p {
+        margin: 0;
+        color: var(--text-2);
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--space-2);
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.09), transparent 46%),
+          var(--panel-soft);
+        box-shadow: var(--shadow);
+        padding: var(--space-2);
+      }
+
+      .card h3 {
+        margin: 0 0 0.42rem;
+        font-size: clamp(1rem, 0.9rem + 0.4vw, 1.22rem);
+      }
+
+      .card p,
+      .card li {
+        color: var(--text-2);
+      }
+
+      .card ul {
+        margin: 0.5rem 0 0;
+        padding-left: 1.1rem;
+        display: grid;
+        gap: 0.32rem;
+      }
+
+      .boundary-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+
+      .boundary-table th,
+      .boundary-table td {
+        border: 1px solid var(--line);
+        padding: 0.58rem;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .boundary-table th {
+        font-family: "Space Grotesk", sans-serif;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .pipeline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--space-1);
+      }
+
+      .pipe-node {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 0.65rem;
+        background: rgba(7, 12, 20, 0.42);
+        position: relative;
+      }
+
+      .pipe-node::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        right: -0.43rem;
+        width: 0.42rem;
+        height: 1px;
+        background: rgba(255, 255, 255, 0.28);
+      }
+
+      .pipe-node:last-child::after {
+        display: none;
+      }
+
+      .pipe-node .k {
+        display: inline-flex;
+        font-size: 0.72rem;
+        border: 1px solid rgba(255, 255, 255, 0.26);
+        border-radius: 999px;
+        padding: 0.09rem 0.42rem;
+        color: var(--text-1);
+      }
+
+      .pipe-node b {
+        display: block;
+        margin-top: 0.4rem;
+        font-size: 0.9rem;
+      }
+
+      .pipe-node p {
+        margin: 0.28rem 0 0;
+        font-size: 0.8rem;
+        color: var(--text-3);
+      }
+
+      .risk-list .risk {
+        border-left: 3px solid transparent;
+        padding-left: 0.62rem;
+      }
+
+      .risk.ok {
+        border-left-color: var(--ok);
+      }
+
+      .risk.warn {
+        border-left-color: var(--warn);
+      }
+
+      .risk.danger {
+        border-left-color: var(--danger);
+      }
+
+      .layer-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--space-1);
+      }
+
+      .layer {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 0.62rem;
+        background: rgba(9, 14, 24, 0.45);
+      }
+
+      .layer .lv {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.74rem;
+        color: var(--accent);
+      }
+
+      .api-list {
+        margin: 0.65rem 0 0;
+        padding-left: 1.1rem;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.8rem;
+        color: #d0d9e8;
+      }
+
+      .rollout {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-1);
+      }
+
+      .phase {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 0.72rem;
+        background: rgba(10, 16, 26, 0.45);
+      }
+
+      .phase .ph {
+        display: inline-flex;
+        font-size: 0.72rem;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        border-radius: 999px;
+        padding: 0.1rem 0.45rem;
+      }
+
+      .phase h3 {
+        margin: 0.5rem 0 0.35rem;
+      }
+
+      .phase ul {
+        margin: 0;
+        padding-left: 1rem;
+        display: grid;
+        gap: 0.25rem;
+      }
+
+      .callout {
+        margin-top: var(--space-2);
+        padding: 0.72rem 0.82rem;
+        border: 1px dashed color-mix(in srgb, var(--warn), transparent 45%);
+        border-radius: var(--radius-sm);
+        background: rgba(242, 188, 79, 0.08);
+        color: #f6ddb2;
+        font-size: 0.86rem;
+      }
+
+      .links {
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .links a {
+        color: #dbe4f5;
+      }
+
+      footer {
+        margin-top: var(--space-6);
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        padding: var(--space-3) 0 var(--space-5);
+        color: var(--text-3);
+        font-size: 0.86rem;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(18px);
+        transition:
+          opacity var(--dur-base) var(--ease),
+          transform var(--dur-base) var(--ease);
+      }
+
+      .reveal.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .hero-shell > * {
+        opacity: 0;
+        transform: translateY(12px);
+        transition:
+          opacity var(--dur-base) var(--ease),
+          transform var(--dur-base) var(--ease);
+      }
+
+      .ready .hero-shell > * {
+        opacity: 1;
+        transform: none;
+      }
+
+      .ready .hero-shell > *:nth-child(1) {
+        transition-delay: 20ms;
+      }
+
+      .ready .hero-shell > *:nth-child(2) {
+        transition-delay: 100ms;
+      }
+
+      .ready .hero-shell > *:nth-child(3) {
+        transition-delay: 180ms;
+      }
+
+      .ready .hero-shell > *:nth-child(4) {
+        transition-delay: 260ms;
+      }
+
+      @media (max-width: 64rem) {
+        .grid-2,
+        .rollout {
+          grid-template-columns: 1fr;
+        }
+
+        .pipeline,
+        .layer-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .facts {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 44rem) {
+        .container {
+          width: min(74rem, calc(100% - 1rem));
+        }
+
+        nav ul {
+          display: none;
+        }
+
+        .pipeline,
+        .layer-grid,
+        .facts {
+          grid-template-columns: 1fr;
+        }
+
+        .pipe-node::after {
+          display: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition-duration: 0.001ms !important;
+          scroll-behavior: auto !important;
+        }
+
+        .reveal,
+        .hero-shell > * {
+          opacity: 1 !important;
+          transform: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到正文</a>
+    <header>
+      <div class="container header-row">
+        <a class="brand" href="#top">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>ForgeOps Codex Report</span>
+        </a>
+        <nav aria-label="文档导航">
+          <ul>
+            <li><a href="#thesis">Thesis</a></li>
+            <li><a href="#pipeline">Prompt</a></li>
+            <li><a href="#mechanics">Session</a></li>
+            <li><a href="#liveview">LiveView</a></li>
+            <li><a href="#rollout">Rollout</a></li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero container" id="top" aria-labelledby="hero-title">
+        <div class="hero-shell">
+          <p class="eyebrow">FORGEOPS · CODEX RUNTIME DESIGN REPORT</p>
+          <h1 id="hero-title">从 Prompt 注入到长会话治理：Codex 接入策略全景</h1>
+          <p>
+            本页基于 5 份 `docs/design` 文档整理：`prompt-engineering`、`session-mechanics`、`session-liveview-contract`、
+            `stability-rollout-checklist`、`upstream-follow-policy`。目标是明确控制平面职责边界与可落地执行路径。
+          </p>
+          <div class="facts" aria-label="报告事实">
+            <div class="fact">
+              <b>5 份</b>
+              <span>核心设计文档输入</span>
+            </div>
+            <div class="fact">
+              <b>2026-03-01</b>
+              <span>文档更新时间（均为 Active）</span>
+            </div>
+            <div class="fact">
+              <b>L1-L4</b>
+              <span>Session LiveView 能力分层</span>
+            </div>
+            <div class="fact">
+              <b>P0 / P1 / P2</b>
+              <span>稳定性落地阶段划分</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="report container reveal" id="thesis">
+        <div class="section-head">
+          <span class="tag">Core Thesis</span>
+          <h2>Follow, Not Fork + Control Plane First</h2>
+          <p>ForgeOps 聚焦 turn 间编排与治理；turn 内智能由 Codex 上游持续演进承担。</p>
+        </div>
+        <div class="grid-2">
+          <article class="card">
+            <h3>关键判断</h3>
+            <ul>
+              <li>“任务结束后给下一步建议”主要是指令层行为，不是后处理拼接。</li>
+              <li>Prompt 组装链路：`base_instructions -> developer -> user(AGENTS+skills) -> turn 内 skill 注入`。</li>
+              <li>`AGENTS.md` 是路径级拼接文档并受字节预算限制，适合地图，不适合百科。</li>
+              <li>Skills 是一等机制，支持显式/隐式触发与权限画像。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>职责边界矩阵</h3>
+            <table class="boundary-table" aria-label="责任边界">
+              <thead>
+                <tr>
+                  <th>ForgeOps</th>
+                  <th>Codex</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>workflow / run-step-session 编排、重试、恢复、证据链</td>
+                  <td>turn 内 prompt 组装、skills 注入、MCP 路由</td>
+                </tr>
+                <tr>
+                  <td>platform/invariants/docs gate 与审计闭环</td>
+                  <td>沙箱/审批策略、长会话压缩与恢复细节</td>
+                </tr>
+                <tr>
+                  <td>Runtime Adapter 隔离运行时差异</td>
+                  <td>上游能力演进与协议兼容</td>
+                </tr>
+              </tbody>
+            </table>
+          </article>
+        </div>
+      </section>
+
+      <section class="report container reveal" id="pipeline">
+        <div class="section-head">
+          <span class="tag">Prompt & Skills</span>
+          <h2>上下文注入链路</h2>
+          <p>把“为什么会输出当前行为”变成可解释路径，而不是黑箱猜测。</p>
+        </div>
+        <div class="pipeline" aria-label="Prompt 注入流程">
+          <article class="pipe-node">
+            <span class="k">Step 1</span>
+            <b>Base Instructions</b>
+            <p>会话初始化优先级：config -> session_meta -> model default。</p>
+          </article>
+          <article class="pipe-node">
+            <span class="k">Step 2</span>
+            <b>Developer Layer</b>
+            <p>权限/沙箱、协作模式、feature 指令按顺序拼装。</p>
+          </article>
+          <article class="pipe-node">
+            <span class="k">Step 3</span>
+            <b>User Layer</b>
+            <p>用户指令 + AGENTS 路径拼接 + skills section。</p>
+          </article>
+          <article class="pipe-node">
+            <span class="k">Step 4</span>
+            <b>Turn Skill Injection</b>
+            <p>显式提及 `$skill` 触发注入，隐式调用可记录并审批。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="report container reveal" id="mechanics">
+        <div class="section-head">
+          <span class="tag">Session Mechanics</span>
+          <h2>长会话稳定性：机制收益与风险账本</h2>
+          <p>稳定来自工程机制组合，不是单一算法魔法。</p>
+        </div>
+        <div class="grid-2 risk-list">
+          <article class="card">
+            <h3>稳定来源（源码证据）</h3>
+            <ul>
+              <li class="risk ok"><b>队列驱动状态机：</b>提交通道 `bounded(512)`，串行消费会话操作。</li>
+              <li class="risk ok"><b>单活跃任务：</b>spawn 新任务前先中断旧任务并清理执行进程。</li>
+              <li class="risk ok"><b>网络降级：</b>采样失败后重试与退避，WebSocket 可回退 HTTPS。</li>
+              <li class="risk ok"><b>可恢复持久化：</b>rollout JSONL + resume/fork 重建历史。</li>
+              <li class="risk ok"><b>资源上限：</b>进程/输出/历史裁剪，防止无限膨胀。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>长会话风险（设计约束）</h3>
+            <ul>
+              <li class="risk warn"><b>多次 compaction 语义漂移：</b>长期线程准确性会下降，建议必要时切新线程。</li>
+              <li class="risk warn"><b>压缩有损：</b>local/remote compact 都会过滤或截断历史。</li>
+              <li class="risk warn"><b>token 估算误差：</b>压缩触发时机可能偏早/偏晚。</li>
+              <li class="risk danger"><b>事件通道无界：</b>慢消费场景存在背压放大风险。</li>
+              <li class="risk warn"><b>跨模型恢复：</b>恢复时模型不一致会引入性能告警。</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="report container reveal" id="liveview">
+        <div class="section-head">
+          <span class="tag">Session LiveView Contract</span>
+          <h2>L1-L4 能力分层与接口契约</h2>
+          <p>目标是“看见 Agent 正在如何干活”，而不是只看日志片段。</p>
+        </div>
+        <div class="card">
+          <div class="layer-grid">
+            <article class="layer">
+              <span class="lv">L1</span>
+              <h3>Metadata</h3>
+              <p>`sessionId/runId/stepId/agentId/threadId/turnId/model/status`</p>
+            </article>
+            <article class="layer">
+              <span class="lv">L2</span>
+              <h3>Timeline</h3>
+              <p>标准化事件流，支持历史分页与 SSE tail。</p>
+            </article>
+            <article class="layer">
+              <span class="lv">L3</span>
+              <h3>Evidence</h3>
+              <p>命令摘要、文件改动、测试结果、风险信号。</p>
+            </article>
+            <article class="layer">
+              <span class="lv">L4</span>
+              <h3>Control</h3>
+              <p>resume/fork/interrupt 与观察接口分权鉴权。</p>
+            </article>
+          </div>
+          <ul class="api-list">
+            <li>GET `/api/sessions/:id`</li>
+            <li>GET `/api/sessions/:id/events?afterId=&lt;id&gt;&amp;limit=&lt;n&gt;`</li>
+            <li>GET `/api/sessions/:id/stream?sinceId=&lt;id&gt;` (SSE)</li>
+            <li>GET `/api/sessions/:id/evidence`</li>
+            <li>GET `/api/sessions/:id/resume-command` (只读命令模板)</li>
+            <li>GET `/api/mobile/sessions/:id/snapshot` (移动端聚合)</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="report container reveal" id="rollout">
+        <div class="section-head">
+          <span class="tag">Stability Rollout</span>
+          <h2>P0 / P1 / P2 落地路径</h2>
+          <p>先观测，再阈值策略，最后产品化闭环，避免先改核心语义。</p>
+        </div>
+        <div class="rollout">
+          <article class="phase">
+            <span class="ph">P0 · Low Risk</span>
+            <h3>先看得见风险</h3>
+            <ul>
+              <li>统一 resume/thread/turn 生命周期事件</li>
+              <li>固化 session 追踪字段（thread/turn/model）</li>
+              <li>新增 `runtime.session.risk`（只告警，不阻塞）</li>
+              <li>API/SSE 透传风险事件</li>
+            </ul>
+          </article>
+          <article class="phase">
+            <span class="ph">P1 · Mid Risk</span>
+            <h3>策略阈值可解释</h3>
+            <ul>
+              <li>项目级 `longSessionPolicy` 配置读取</li>
+              <li>`runtime.session.rotate.recommended` 触发</li>
+              <li>resume 失败 fallback 语义标准化</li>
+              <li>非阻塞“建议新开线程/拆小任务”</li>
+            </ul>
+          </article>
+          <article class="phase">
+            <span class="ph">P2 · Product Loop</span>
+            <h3>进入运营闭环</h3>
+            <ul>
+              <li>UI 会话健康度（normal/risk/rotate）</li>
+              <li>风险自动汇总技术债追踪</li>
+              <li>adapter 声明稳定性能力</li>
+              <li>resume/fallback/risk 烟测脚本</li>
+            </ul>
+          </article>
+        </div>
+        <p class="callout">
+          推荐默认阈值（文档约定）：`maxResumeFailuresPerStep = 2`，`maxRetriesPerStep = 3`，
+          `sessionRiskWindowMinutes = 30`。当前项目真实启用状态：<b>待补充</b>（需以 `docs/quality/verification-status.md` 核对）。
+        </p>
+      </section>
+
+      <section class="report container reveal">
+        <div class="section-head">
+          <span class="tag">Evidence Index</span>
+          <h2>本页来源文档</h2>
+          <p>全部内容来自仓库真实文档，不含虚构指标。</p>
+        </div>
+        <div class="card links">
+          <a href="./docs/design/codex-runtime-prompt-engineering.md">codex-runtime-prompt-engineering.md</a>
+          <a href="./docs/design/codex-runtime-session-mechanics.md">codex-runtime-session-mechanics.md</a>
+          <a href="./docs/design/codex-runtime-session-liveview-contract.md">codex-runtime-session-liveview-contract.md</a>
+          <a href="./docs/design/codex-runtime-stability-rollout-checklist.md">codex-runtime-stability-rollout-checklist.md</a>
+          <a href="./docs/design/codex-upstream-follow-policy.md">codex-upstream-follow-policy.md</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="container">
+      Codex Runtime Report for ForgeOps · 仅基于仓库文档事实生成 · 若与代码冲突，请在同一 PR 同步修正文档。
+    </footer>
+
+    <script>
+      (function () {
+        const root = document.documentElement;
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        requestAnimationFrame(() => root.classList.add("ready"));
+
+        const nodes = document.querySelectorAll(".reveal");
+        if (reduceMotion) {
+          nodes.forEach((node) => node.classList.add("show"));
+          return;
+        }
+
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("show");
+                observer.unobserve(entry.target);
+              }
+            });
+          },
+          { threshold: 0.18, rootMargin: "0px 0px -8% 0px" }
+        );
+
+        nodes.forEach((node) => observer.observe(node));
+      })();
+    </script>
+  </body>
+</html>

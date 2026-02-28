@@ -1,7 +1,13 @@
 # Codex 运行时提示词工程与技能加载机制调研
 
 Status: Active
-Updated: 2026-02-26
+Updated: 2026-03-01
+
+## 文档定位
+
+- 本文档用于设计与演进讨论，可能包含“目标态/候选方案”。
+- 当前已落地行为以代码与 `docs/quality/verification-status.md` 为准。
+- 若文档与代码冲突，请在同一 PR 同步修正文档。
 
 ## 目的与范围
 
@@ -11,11 +17,11 @@ Updated: 2026-02-26
 2. Codex 的 AGENTS/Skills 是怎么被加载并注入上下文的？
 3. ForgeOps 在接入 Codex 作为首个 Runtime 时，应该如何设计反馈闭环，且避免“过度约束导致效果变差”？
 
-调研范围为本地源码：
+调研范围为本地源码（示例路径）：
 
-- `/Users/bytedance/ai-workflow/codex/codex-rs/protocol`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/codex-api`
+- `~/ai-workflow/codex/codex-rs/protocol`
+- `~/ai-workflow/codex/codex-rs/core`
+- `~/ai-workflow/codex/codex-rs/codex-api`
 
 ## 结论摘要
 
@@ -186,19 +192,19 @@ Skills 根目录来自多作用域并去重：
 
 ## 证据文件清单
 
-- `/Users/bytedance/ai-workflow/codex/codex-rs/protocol/src/prompts/base_instructions/default.md`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/protocol/src/models.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/codex.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/project_doc.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/render.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/loader.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/model.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/manager.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/injection.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/invocation_utils.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/env_var_dependencies.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/skills/permissions.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/tools/handlers/shell.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/core/src/tools/handlers/unified_exec.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/protocol/src/items.rs`
-- `/Users/bytedance/ai-workflow/codex/codex-rs/codex-api/src/common.rs`
+- `~/ai-workflow/codex/codex-rs/protocol/src/prompts/base_instructions/default.md`
+- `~/ai-workflow/codex/codex-rs/protocol/src/models.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/codex.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/project_doc.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/render.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/loader.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/model.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/manager.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/injection.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/invocation_utils.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/env_var_dependencies.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/skills/permissions.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/tools/handlers/shell.rs`
+- `~/ai-workflow/codex/codex-rs/core/src/tools/handlers/unified_exec.rs`
+- `~/ai-workflow/codex/codex-rs/protocol/src/items.rs`
+- `~/ai-workflow/codex/codex-rs/codex-api/src/common.rs`

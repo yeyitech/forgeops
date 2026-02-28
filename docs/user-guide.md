@@ -1,7 +1,7 @@
 # ForgeOps 用户使用手册
 
 Status: Active
-Updated: 2026-02-27
+Updated: 2026-03-01
 
 ## 适用对象
 
@@ -18,7 +18,7 @@ Updated: 2026-02-27
 - `Workflow`：项目级流程定义（默认 6 步，可在 `.forgeops/workflow.yaml` 自定义）。
 - `Run Mode`：
   - `quick`：轻流程，优先 `implement -> test -> cleanup`。
-  - `standard`：按项目 workflow 正常执行（默认）。
+  - `standard`：按项目 workflow 正常执行（显式指定时启用）。
 
 ---
 
@@ -38,7 +38,7 @@ forgeops codex project --local-only
 - 只做本地代码/测试/文档操作。
 - 提示词会约束禁止执行 `forgeops issue *` / `forgeops run *`。
 
-### B. Issue 驱动流水线（走标准交付链）
+### B. Issue 驱动流水线（走可审计交付链）
 
 适合：正式需求交付、需要审计链路、需要 PR 合并和自动收尾。
 
@@ -46,8 +46,8 @@ forgeops codex project --local-only
 # 创建 issue + 自动触发 run
 forgeops issue create <projectId> "实现 XXX 功能"
 
-# 或手动创建 run（必须绑定 issue）
-forgeops run create <projectId> --issue 123 --mode standard
+# 或手动创建 run（必须绑定 issue；未指定 mode 默认 quick）
+forgeops run create <projectId> --issue 123
 ```
 
 ---
@@ -116,7 +116,7 @@ forgeops run create <projectId> --issue 456 --mode standard
 
 - 只扫描 `open` issue。
 - 默认只处理带 `forgeops:ready` 标签的 issue。
-- 若 issue 还有 `forgeops:quick`，自动 run 会走 `quick`；否则走 `standard`。
+- 若 issue 带 `forgeops:standard`，自动 run 会走 `standard`；否则默认走 `quick`。
 
 你可以改成“处理全部 open issue”：
 
@@ -217,4 +217,3 @@ forgeops service logs --lines 200
 ```bash
 npm run docs:check
 ```
-
