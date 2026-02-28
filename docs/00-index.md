@@ -42,8 +42,14 @@ Updated: 2026-02-27
 
 - `docs/design/core-beliefs.md`
   - 系统设计信念与工程倾向。
+- `docs/design/codex-upstream-follow-policy.md`
+  - Codex 上游跟随策略（Follow, Not Fork）与控制平面边界。
 - `docs/design/skill-driven-delivery.md`
   - 场景化能力由技能承载的方法论（不枚举环境，不新增实体）。
+- `docs/design/skills-policy-delivery-evidence.md`
+  - 技能治理三层模型（Policy / Delivery / Evidence）与可运营指标。
+- `docs/design/complexity-budget-and-reversibility.md`
+  - 复杂度预算、可逆演进与四级升级阶梯。
 - `docs/design/skill-evolution-closed-loop.md`
   - 技能从模板化到项目本地化的证据驱动演化闭环与防退化机制。
 - `docs/design/skill-collective-evolution-service.md`
@@ -58,6 +64,10 @@ Updated: 2026-02-27
   - 在 `$FORGEOPS_HOME/skills-global` 建立用户级全局技能库与审计链路。
 - `docs/design/platform-toolchain-quality-gate.md`
   - 产品类型工具链 preflight、Platform Gate 与 run 双闸门状态模型。
+- `docs/design/existing-project-managed-onboarding-vision.md`
+  - 既有项目托管与自动演进愿景（仅愿景，非执行计划）。
+- `docs/design/skill-as-app-vision.md`
+  - Skill-as-App 愿景（仅愿景，非执行计划）。
 - `docs/design/codex-runtime-prompt-engineering.md`
   - Codex 提示词工程、AGENTS/Skills 注入机制与 ForgeOps 集成建议。
 - `docs/design/codex-runtime-session-mechanics.md`
@@ -115,12 +125,16 @@ Updated: 2026-02-27
 
 - 改流水线结构/并发：优先读 `docs/architecture/00-overview.md`。
 - 改角色职责与技能协作：优先读 `docs/design/skill-driven-delivery.md`。
+- 制定 Codex 上游跟随边界：优先读 `docs/design/codex-upstream-follow-policy.md`。
+- 改技能治理策略层与证据层：优先读 `docs/design/skills-policy-delivery-evidence.md`。
+- 做平台复杂度预算与可逆发布策略：优先读 `docs/design/complexity-budget-and-reversibility.md`。
 - 设计技能本地化升级闭环：优先读 `docs/design/skill-evolution-closed-loop.md`。
 - 设计技能群体进化中心服务：优先读 `docs/design/skill-collective-evolution-service.md`。
 - 设计“issue 注入偏好 + cleanup 沉淀技能候选”闭环：优先读 `docs/design/issue-driven-taste-and-skill-loop.md`。
 - 设计“候选技能 -> PR 人审晋升”闭环：优先读 `docs/design/skill-promotion-pr-review-loop.md`。
 - 设计“候选技能定时自动晋升”调度链路：优先读 `docs/design/skill-auto-promotion-scheduler.md`。
 - 设计 user-global 技能库与审计链路：优先读 `docs/design/user-global-skill-library.md`。
+- 规划“技能即应用单元（Skill-as-App）”愿景：优先读 `docs/design/skill-as-app-vision.md`。
 - 改技能统一解析优先级（project-local > user-global > official）：优先读 `docs/architecture/00-overview.md` 与 `docs/quality/verification-status.md`。
 - 调优 Codex runtime 提示词/技能交互：优先读 `docs/design/codex-runtime-prompt-engineering.md`。
 - 设计 Codex Session 实时观测与移动端消费：优先读 `docs/design/codex-runtime-session-liveview-contract.md`。

@@ -45,8 +45,14 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
 
 - `docs/design/core-beliefs.md`
   - 关键工程信念与决策倾向。
+- `docs/design/codex-upstream-follow-policy.md`
+  - Codex 上游跟随策略（Follow, Not Fork）与运行时边界。
 - `docs/design/skill-driven-delivery.md`
   - 场景化能力由技能承载的方法论与契约建议。
+- `docs/design/skills-policy-delivery-evidence.md`
+  - 技能治理三层模型（Policy / Delivery / Evidence）与效果指标。
+- `docs/design/complexity-budget-and-reversibility.md`
+  - 复杂度预算、可逆演进与四级升级阶梯。
 - `docs/design/skill-evolution-closed-loop.md`
   - 技能从模板化到项目本地化的证据驱动升级闭环。
 - `docs/design/skill-collective-evolution-service.md`
@@ -61,6 +67,10 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
   - 在 `$FORGEOPS_HOME/skills-global` 建立用户级全局技能库与审计链路。
 - `docs/design/platform-toolchain-quality-gate.md`
   - 产品类型工具链 preflight、Platform Gate 与双闸门验收设计。
+- `docs/design/existing-project-managed-onboarding-vision.md`
+  - 既有项目托管与自动演进愿景（仅愿景，非排期计划）。
+- `docs/design/skill-as-app-vision.md`
+  - Skill-as-App 愿景（仅愿景，非排期计划）。
 - `docs/design/codex-runtime-prompt-engineering.md`
   - Codex 提示词工程、AGENTS/Skills 注入链路与集成策略。
 - `docs/design/codex-runtime-session-mechanics.md`
@@ -144,15 +154,30 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
 - 设计技能群体进化（跨项目经验聚合 -> 模板升级）：
   - `docs/design/skill-collective-evolution-service.md`、`docs/design/skill-evolution-closed-loop.md`
   - `src/core/skills.js`、`src/core/store.js`、`src/server/app.js`
+- 规划 Skill-as-App 愿景（非计划）：
+  - `docs/design/skill-as-app-vision.md`、`docs/design/skill-evolution-closed-loop.md`
+  - `docs/design/user-global-skill-library.md`
 - 设计场景化观测/验证策略（不新增实体）：
   - `docs/design/skill-driven-delivery.md`、`docs/harness-engineering-guidelines.md`
   - `<projectRoot>/.forgeops/skills/*/SKILL.md`、`<projectRoot>/.forgeops/context.md`
 - 改产品类型工具链 preflight / 平台验收闸门：
   - `docs/design/platform-toolchain-quality-gate.md`、`docs/architecture/00-overview.md`
   - `src/core/platform-toolchain.js`、`src/core/project-init.js`、`src/core/workflow.js`、`src/core/store.js`
+- 规划已有项目托管与自动演进愿景（非计划）：
+  - `docs/design/existing-project-managed-onboarding-vision.md`、`docs/harness-engineering-guidelines.md`
+  - `docs/exec-plans/tech-debt-tracker.md`
 - 调优 Codex 提示词/技能装配策略：
   - `docs/design/codex-runtime-prompt-engineering.md`、`docs/runtime-adapter-design.md`
   - `src/runtime/codex-exec-json.js`、`src/worker/engine.js`
+- 制定 Codex 上游跟随策略（Follow, Not Fork）：
+  - `docs/design/codex-upstream-follow-policy.md`、`docs/runtime-adapter-design.md`
+  - `src/runtime/index.js`、`src/runtime/codex-exec-json.js`、`src/worker/engine.js`
+- 改技能治理分层（Policy / Delivery / Evidence）：
+  - `docs/design/skills-policy-delivery-evidence.md`、`docs/design/skill-driven-delivery.md`
+  - `src/core/skills.js`、`src/core/store.js`、`src/core/workflow.js`
+- 做复杂度预算与可逆演进治理：
+  - `docs/design/complexity-budget-and-reversibility.md`、`docs/quality/domain-grades.md`
+  - `docs/exec-plans/tech-debt-tracker.md`、`src/worker/engine.js`
 - 研究 Codex 长会话稳定性/压缩机制：
   - `docs/design/codex-runtime-session-mechanics.md`、`docs/runtime-adapter-design.md`
   - `src/runtime/codex-exec-json.js`、`src/worker/engine.js`
