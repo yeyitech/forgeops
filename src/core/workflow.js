@@ -40,6 +40,9 @@ const DEFAULT_REVIEW_AUTO_FIX_POLICY = Object.freeze({
   maxLines: 200,
   allowlist: ["ci", "tooling", "typecheck", "docs"],
 });
+const SKILL_DELIVERY_LEGACY = "legacy";
+const SKILL_DELIVERY_CODEX_NATIVE = "codex-native";
+const MAX_SKILL_MENTIONS_PER_AGENT = 4;
 
 function parseBooleanLike(value, fallback) {
   if (typeof value === "boolean") return value;
@@ -237,6 +240,32 @@ function renderTechProfileSection(ctx) {
   return `Tech profile:\n- language: ${language}\n- frontend: ${frontendStack}\n- backend: ${backendStack}\n- ci: ${ciProvider}\n`;
 }
 
+function normalizeSkillDeliveryMode(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return SKILL_DELIVERY_CODEX_NATIVE;
+  if (text === SKILL_DELIVERY_LEGACY || text === SKILL_DELIVERY_CODEX_NATIVE) {
+    return text;
+  }
+  return SKILL_DELIVERY_CODEX_NATIVE;
+}
+
+function resolveSkillMentionPath(item) {
+  const mentionPath = String(item?.mentionPath ?? "").trim();
+  if (mentionPath) return mentionPath;
+
+  const source = String(item?.source ?? "").trim();
+  const relPath = String(item?.path ?? "").trim().replace(/\\/g, "/");
+  const absPath = String(item?.absolutePath ?? "").trim();
+
+  if (source === "project-local" && relPath) {
+    return relPath;
+  }
+  if (absPath) {
+    return absPath;
+  }
+  return relPath;
+}
+
 function renderAgentSkillsSection(ctx, agentId) {
   const raw = ctx.agentSkills && typeof ctx.agentSkills === "object"
     ? ctx.agentSkills[agentId]
@@ -246,16 +275,42 @@ function renderAgentSkillsSection(ctx, agentId) {
     return "Assigned skills:\n- (none)\n";
   }
 
-  const lines = items.map((item) => {
+  const mode = normalizeSkillDeliveryMode(ctx?.skillDeliveryMode);
+  if (mode === SKILL_DELIVERY_LEGACY) {
+    const lines = items.map((item) => {
+      const name = String(item?.name ?? "").trim() || "unknown-skill";
+      const description = String(item?.description ?? "").trim();
+      const filePath = String(item?.path ?? "").trim();
+      const source = String(item?.source ?? "").trim();
+      const sourceText = source ? ` {source=${source}}` : "";
+      return `- ${name}${description ? `: ${description}` : ""}${sourceText}${filePath ? ` [${filePath}]` : ""}`;
+    });
+    return `Assigned skills:\n${lines.join("\n")}\n\nSkill loading policy:\n- Load only the needed SKILL.md files listed above.\n- Keep context usage minimal and task-relevant.\n`;
+  }
+
+  const selected = items.slice(0, MAX_SKILL_MENTIONS_PER_AGENT);
+  const lines = selected.map((item) => {
     const name = String(item?.name ?? "").trim() || "unknown-skill";
     const description = String(item?.description ?? "").trim();
-    const filePath = String(item?.path ?? "").trim();
     const source = String(item?.source ?? "").trim();
+    const mentionPath = resolveSkillMentionPath(item);
+    const mention = mentionPath
+      ? `[$${name}](${mentionPath})`
+      : `$${name}`;
     const sourceText = source ? ` {source=${source}}` : "";
-    return `- ${name}${description ? `: ${description}` : ""}${sourceText}${filePath ? ` [${filePath}]` : ""}`;
+    return `- ${mention}${description ? `: ${description}` : ""}${sourceText}`;
   });
+  const hidden = Math.max(0, items.length - selected.length);
 
-  return `Assigned skills:\n${lines.join("\n")}\n\nSkill loading policy:\n- Load only the needed SKILL.md files listed above.\n- Keep context usage minimal and task-relevant.\n`;
+  return [
+    "Assigned skills (codex-native):",
+    ...lines,
+    hidden > 0 ? `- ... ${hidden} more skills omitted by prompt budget` : "",
+    "",
+    "Skill loading policy:",
+    "- Prefer Codex native loading from explicit skill mentions above.",
+    "- Load only the skills required for the current subtask; do not bulk-load all skills.",
+  ].filter(Boolean).join("\n") + "\n";
 }
 
 function renderSkillAuthoringSection(ctx) {

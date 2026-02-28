@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const AGENT_IDS = [
@@ -254,6 +255,22 @@ function toDisplayPath(filePath, layer, options = {}) {
   return filePath;
 }
 
+function toSkillMentionPath(filePath, layer, options = {}) {
+  const resolved = String(filePath ?? "").trim();
+  if (!resolved) return "";
+
+  if (layer === "project-local") {
+    const projectRoot = String(options.projectRootPath ?? "").trim();
+    if (projectRoot) {
+      return path.relative(projectRoot, resolved).replace(/\\/g, "/");
+    }
+  }
+
+  // For user-global/official layers, keep absolute paths so Codex can resolve them
+  // regardless of the current project worktree cwd.
+  return resolved;
+}
+
 function readSkillDescriptor(params) {
   const skillPath = params?.skillPath ? path.resolve(params.skillPath) : "";
   if (!skillPath || !fs.existsSync(skillPath)) return null;
@@ -270,6 +287,11 @@ function readSkillDescriptor(params) {
   const fallbackName = path.basename(path.dirname(skillPath));
   const name = String(parsed.name ?? "").trim() || fallbackName;
   const description = String(parsed.description ?? "").trim();
+  const contentHash = createHash("sha256").update(text).digest("hex");
+  const mentionPath = toSkillMentionPath(skillPath, source, {
+    projectRootPath: params?.projectRootPath,
+    runtimeHome: params?.runtimeHome,
+  });
 
   return {
     name,
@@ -280,6 +302,8 @@ function readSkillDescriptor(params) {
       runtimeHome: params?.runtimeHome,
     }),
     absolutePath: skillPath,
+    mentionPath,
+    contentHash,
   };
 }
 

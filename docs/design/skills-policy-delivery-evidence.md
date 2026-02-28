@@ -86,6 +86,12 @@ ForgeOps 禁止：
 - 降低 token 税
 - 降低长会话语义漂移风险
 
+当前实现（2026-02-27）：
+
+- 默认交付模式：`codex-native`
+- 可通过环境变量回退：`FORGEOPS_SKILL_DELIVERY_MODE=legacy`
+- `codex-native` 模式下，步骤提示词默认只保留有限技能显式引用（预算裁剪）。
+
 ## 技能快照与审计建议
 
 run 创建时记录每个技能的最小快照字段：

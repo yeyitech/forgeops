@@ -115,6 +115,8 @@ const MAINLINE_REF_FETCH_STATE = new Map();
 const RUN_MODE_STANDARD = "standard";
 const RUN_MODE_QUICK = "quick";
 const RUN_MODE_QUICK_STEP_KEYS = new Set(["implement", "test", "cleanup"]);
+const SKILL_DELIVERY_LEGACY = "legacy";
+const SKILL_DELIVERY_CODEX_NATIVE = "codex-native";
 
 function ensureUserGlobalSkillsBootstrapFiles(rootPath) {
   const resolved = path.resolve(rootPath);
@@ -369,6 +371,15 @@ function parseRunModeLike(value, fallback = RUN_MODE_STANDARD) {
     return text;
   }
   throw new Error(`Invalid run mode: ${text}`);
+}
+
+function normalizeSkillDeliveryMode(value, fallback = SKILL_DELIVERY_CODEX_NATIVE) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return fallback;
+  if (text === SKILL_DELIVERY_LEGACY || text === SKILL_DELIVERY_CODEX_NATIVE) {
+    return text;
+  }
+  return fallback;
 }
 
 function resolveRunWorkflowByMode(workflow, requestedRunMode) {
@@ -4966,6 +4977,10 @@ export class ForgeOpsStore {
       projectContext: this.loadProjectContext(project.root_path),
       projectGovernance: this.loadProjectGovernance(project.root_path),
       projectInvariants: this.loadProjectInvariants(project.root_path),
+      skillDeliveryMode: normalizeSkillDeliveryMode(
+        params.skillDeliveryMode ?? process.env.FORGEOPS_SKILL_DELIVERY_MODE,
+        SKILL_DELIVERY_CODEX_NATIVE,
+      ),
       agentSkills: this.loadProjectSkills({
         rootPath: project.root_path,
         productType: project.product_type,
