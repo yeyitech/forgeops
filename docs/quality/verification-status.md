@@ -1,7 +1,7 @@
 # 验证状态
 
 Status: Active
-Updated: 2026-02-27
+Updated: 2026-03-01
 
 ## 已验证
 
@@ -13,9 +13,9 @@ Updated: 2026-02-27
 - run 创建已支持项目级 `.forgeops/workflow.yaml` 配置与校验。
 - run 创建已支持 DAG 依赖校验（入口步骤、引用合法性、无循环）。
 - run 创建会注入项目上下文文件 `.forgeops/context.md`。
-- project init 可自动初始化 git 仓库并创建/绑定 GitHub origin（依赖 `gh auth`）。
+- project init 可自动初始化 git 仓库并创建/绑定 GitHub origin（依赖 `gh` CLI + 系统配置 GitHub PAT）。
 - project init 完成后会自动尝试保护 `main` 分支（严格策略优先，失败回退到基础保护策略；可通过 `--branch-protection|--no-branch-protection` 显式控制）。
-- GitHub 强流程 precheck 已包含 git 身份校验（`user.name` + `user.email`）与 `gh auth`。
+- GitHub 强流程 precheck 已包含 git 身份校验（`user.name` + `user.email`）与 GitHub PAT 可用性 / scope 校验。
 - 系统启动前已增加 runtime precheck（当前校验 `codex --version`）。
 - run 创建已接入 GitHub 强约束校验，并为每个 run 自动创建独立 git worktree 分支。
 - run 完成后默认会在 cleanup 后执行最终闸门（invariants + docs checks）并自动合并 PR（可通过 workflow `auto_merge` 项目级关闭，并可通过 `merge_method` 选择 `squash|merge|rebase`）。
@@ -41,10 +41,13 @@ Updated: 2026-02-27
 - `review` 步骤上的不变量 warning 已支持自动创建 GitHub follow-up issue（默认非阻塞，可配置）。
 - 已支持在 PR 合并后自动尝试同步项目主工作区默认分支到远端最新（fast-forward）。
 - 已新增项目级 Cron 调度配置（`.forgeops/scheduler.yaml`），并在服务启动后自动注册 cleanup 与 issueAutoRun 两类定时任务；cleanup 支持 `lite|deep`（定时默认 deep 单节点）。
+- deep cleanup 调度 run 已支持自动注入“上一次 cleanup 基线 + 本窗口 delta”上下文（失败/重试/文档检查/调度恢复/技能晋升信号）。
 - `cleanup` 步骤已支持输出并落盘技能候选（`skill-candidate` -> `.forgeops/skills/candidates/*.md`）。
+- `cleanup` 候选沉淀已支持从控制面事件流自动生成 `event-seed` 候选（失败与成功经验均可沉淀）。
 - 已提供技能候选晋升链路（CLI/API）：从 `.forgeops/skills/candidates/*.md` 生成独立 worktree 分支并创建 draft PR（可选写入角色技能映射），与需求 run DAG 解耦。
 - 已提供 user-global 技能库状态与晋升链路（CLI/API）：固定路径 `$FORGEOPS_HOME/skills-global`，通过 PR 与 `audit.ndjson` 审计跨项目晋升。
 - Scheduler 已支持独立技能治理 Cron：`skillPromotion`（项目内自动晋升）与 `globalSkillPromotion`（user-global 自动晋升）。
+- 自动晋升评分已接入技能效果回流信号（基于 promotion 前后窗口 run 成功率与重试率变化做加权）。
 - 自动晋升已支持同分支更新打开中的 Draft PR（`allowUpdateExistingPr`），使同名技能可持续编辑演进而非重复新增。
 - 已提供官方技能仓目录 `official-skills/`（标准 `SKILL.md`），替代 JS 内嵌模板作为初始化源。
 - 已提供技能统一解析器与来源优先级：`project-local > user-global > official`，并在 prompt 注入中展示来源。

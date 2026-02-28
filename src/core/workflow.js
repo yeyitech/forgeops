@@ -344,6 +344,51 @@ function renderInvariantSection(ctx) {
   return `Invariant config:\n${JSON.stringify(cfg, null, 2)}\n`;
 }
 
+function renderCleanupTelemetrySection(ctx) {
+  const cleanup = ctx?.cleanupContext && typeof ctx.cleanupContext === "object"
+    ? ctx.cleanupContext
+    : null;
+  if (!cleanup) {
+    return "Cleanup telemetry:\n- (not provided for this run)\n";
+  }
+  const baseline = cleanup.baseline && typeof cleanup.baseline === "object"
+    ? cleanup.baseline
+    : {};
+  const delta = cleanup.delta && typeof cleanup.delta === "object"
+    ? cleanup.delta
+    : {};
+  const runs = delta.runs && typeof delta.runs === "object" ? delta.runs : {};
+  const docs = delta.docs && typeof delta.docs === "object" ? delta.docs : {};
+  const scheduler = delta.scheduler && typeof delta.scheduler === "object" ? delta.scheduler : {};
+  const promotions = delta.promotions && typeof delta.promotions === "object" ? delta.promotions : {};
+  const hotspots = delta.hotspots && typeof delta.hotspots === "object" ? delta.hotspots : {};
+  const retrySteps = Array.isArray(hotspots.retrySteps) ? hotspots.retrySteps : [];
+  const failedSteps = Array.isArray(hotspots.failedSteps) ? hotspots.failedSteps : [];
+  const retryStepText = retrySteps.length > 0
+    ? retrySteps.slice(0, 4).map((item) => `${String(item.stepKey ?? "-")}:${Number(item.count ?? 0)}`).join(", ")
+    : "-";
+  const failedStepText = failedSteps.length > 0
+    ? failedSteps.slice(0, 4).map((item) => `${String(item.stepKey ?? "-")}:${Number(item.count ?? 0)}`).join(", ")
+    : "-";
+
+  return [
+    "Cleanup telemetry:",
+    `- mode: ${String(cleanup.mode ?? "-") || "-"}`,
+    `- trigger: ${String(cleanup.trigger ?? "-") || "-"}`,
+    `- generated_at: ${String(cleanup.generatedAt ?? "-") || "-"}`,
+    `- baseline_run: ${String(baseline.runId ?? "-") || "-"}`,
+    `- baseline_at: ${String(baseline.at ?? "-") || "-"}`,
+    `- baseline_summary: ${String(baseline.summary ?? "-") || "-"}`,
+    `- delta_window: ${String(delta.windowStart ?? "-") || "-"} -> ${String(delta.windowEnd ?? "-") || "-"}`,
+    `- runs: total=${Number(runs.total ?? 0)} completed=${Number(runs.completed ?? 0)} failed=${Number(runs.failed ?? 0)} retries=${Number(runs.stepRetryEvents ?? 0)} step_failed=${Number(runs.stepFailedEvents ?? 0)}`,
+    `- docs: passed=${Number(docs.passed ?? 0)} failed=${Number(docs.failed ?? 0)}`,
+    `- scheduler: missed_started=${Number(scheduler.missedRecoveryStarted ?? 0)} missed_failed=${Number(scheduler.missedRecoveryFailed ?? 0)} skipped_busy=${Number(scheduler.cleanupSkippedBusy ?? 0)}`,
+    `- promotions: project_promoted=${Number(promotions.projectPromoted ?? 0)} global_promoted=${Number(promotions.globalPromoted ?? 0)} project_tick_failed=${Number(promotions.projectTickFailed ?? 0)} global_tick_failed=${Number(promotions.globalTickFailed ?? 0)}`,
+    `- retry_hotspots: ${retryStepText}`,
+    `- failed_hotspots: ${failedStepText}`,
+  ].join("\n") + "\n";
+}
+
 export const STEP_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -591,6 +636,7 @@ ${renderGitHubFlowSection(ctx)}
 ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
+${renderCleanupTelemetrySection(ctx)}
 ${renderAgentSkillsSection(ctx, "garbage-collector")}
 ${renderSkillAuthoringSection(ctx)}
 Pipeline outputs:

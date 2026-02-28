@@ -697,11 +697,41 @@ export class ForgeOpsScheduler {
         });
       }
 
+      let cleanupContext = null;
+      try {
+        cleanupContext = this.store.buildCleanupRunContext({
+          projectId: project.id,
+          mode: cleanupMode,
+          trigger: "scheduler",
+          task: config.cleanup.task,
+          now: nowIso(),
+        });
+        if (cleanupContext?.delta?.windowStart && cleanupContext?.delta?.windowEnd) {
+          this.store.emitEvent(null, null, "scheduler.cleanup.context_built", {
+            projectId: project.id,
+            projectName: project.name,
+            cleanupMode,
+            baselineRunId: String(cleanupContext?.baseline?.runId ?? ""),
+            baselineAt: String(cleanupContext?.baseline?.at ?? ""),
+            windowStart: String(cleanupContext.delta.windowStart),
+            windowEnd: String(cleanupContext.delta.windowEnd),
+          });
+        }
+      } catch (contextErr) {
+        this.store.emitEvent(null, null, "scheduler.cleanup.context_failed", {
+          projectId: project.id,
+          projectName: project.name,
+          cleanupMode,
+          error: safeErrorMessage(contextErr),
+        });
+      }
+
       const run = this.store.createRun({
         projectId: project.id,
         issueId: issue.id,
         task,
         workflowOverride: cleanupMode === CLEANUP_MODE_DEEP ? DEEP_CLEANUP_WORKFLOW : null,
+        cleanupContext,
       });
       this.store.emitEvent(run.id, null, "scheduler.cleanup.run_created", {
         projectId: project.id,
@@ -904,7 +934,9 @@ export class ForgeOpsScheduler {
         const issueLabels = Array.isArray(issue?.labels)
           ? issue.labels.map((item) => String(item ?? "").trim().toLowerCase()).filter(Boolean)
           : [];
-        const runMode = issueLabels.includes("forgeops:quick") ? "quick" : "standard";
+        const runMode = issueLabels.includes("forgeops:standard")
+          ? "standard"
+          : "quick";
         const title = String(issue?.title ?? "").trim() || "未命名需求";
         const task = `[AUTO-ISSUE] 处理 GitHub Issue #${issueId}: ${title}`;
         try {

@@ -114,9 +114,14 @@ const DEFAULT_AUTO_MERGE_CONFLICT_MAX_ATTEMPTS = 2;
 const MAINLINE_REF_FETCH_STATE = new Map();
 const RUN_MODE_STANDARD = "standard";
 const RUN_MODE_QUICK = "quick";
+const RUN_MODE_DEFAULT = RUN_MODE_QUICK;
 const RUN_MODE_QUICK_STEP_KEYS = new Set(["implement", "test", "cleanup"]);
 const SKILL_DELIVERY_LEGACY = "legacy";
 const SKILL_DELIVERY_CODEX_NATIVE = "codex-native";
+const CLEANUP_CONTEXT_DEFAULT_LOOKBACK_DAYS = 7;
+const CLEANUP_EVENT_SEED_MAX_CANDIDATES = 3;
+const SKILL_FEEDBACK_WINDOW_DAYS = 14;
+const SKILL_FEEDBACK_MIN_SAMPLE_RUNS = 2;
 
 function ensureUserGlobalSkillsBootstrapFiles(rootPath) {
   const resolved = path.resolve(rootPath);
@@ -256,6 +261,10 @@ function parseBoolLike(value, fallback = false) {
   return fallback;
 }
 
+function isObjectRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function normalizeMergeMethodLike(value, fallback = "squash") {
   const text = String(value ?? "").trim().toLowerCase();
   if (!text) return fallback;
@@ -355,7 +364,7 @@ function buildStepPolicies(steps) {
   return out;
 }
 
-function normalizeRunMode(value, fallback = RUN_MODE_STANDARD) {
+function normalizeRunMode(value, fallback = RUN_MODE_DEFAULT) {
   const text = String(value ?? "").trim().toLowerCase();
   if (!text) return fallback;
   if (text === RUN_MODE_STANDARD || text === RUN_MODE_QUICK) {
@@ -364,7 +373,7 @@ function normalizeRunMode(value, fallback = RUN_MODE_STANDARD) {
   return fallback;
 }
 
-function parseRunModeLike(value, fallback = RUN_MODE_STANDARD) {
+function parseRunModeLike(value, fallback = RUN_MODE_DEFAULT) {
   const text = String(value ?? "").trim().toLowerCase();
   if (!text) return fallback;
   if (text === RUN_MODE_STANDARD || text === RUN_MODE_QUICK) {
@@ -383,7 +392,7 @@ function normalizeSkillDeliveryMode(value, fallback = SKILL_DELIVERY_CODEX_NATIV
 }
 
 function resolveRunWorkflowByMode(workflow, requestedRunMode) {
-  const mode = normalizeRunMode(requestedRunMode, RUN_MODE_STANDARD);
+  const mode = normalizeRunMode(requestedRunMode, RUN_MODE_DEFAULT);
   const fallback = {
     workflow,
     resolvedRunMode: mode,
@@ -932,6 +941,88 @@ function parseTimeMs(rawValue) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+function toIsoFromMs(rawMs) {
+  const ms = Number(rawMs);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  return new Date(ms).toISOString();
+}
+
+function normalizeCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n <= 0) return 0;
+  return Math.floor(n);
+}
+
+function normalizeRate01(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n <= 0) return 0;
+  if (n >= 1) return 1;
+  return Number(n.toFixed(3));
+}
+
+function computeRate(numerator, denominator) {
+  const den = normalizeCount(denominator);
+  if (den <= 0) return 0;
+  const num = normalizeCount(numerator);
+  return normalizeRate01(num / den);
+}
+
+function normalizeSkillFeedbackKey(rawValue) {
+  const normalized = slugify(String(rawValue ?? "").trim());
+  return String(normalized ?? "").trim();
+}
+
+function normalizeCandidateMetadata(rawMetadata) {
+  if (!rawMetadata || typeof rawMetadata !== "object") {
+    return {};
+  }
+  const reserved = new Set([
+    "title",
+    "source",
+    "project",
+    "run",
+    "step",
+    "issue",
+    "generated_at",
+  ]);
+  const out = {};
+  for (const [rawKey, rawValue] of Object.entries(rawMetadata)) {
+    const key = String(rawKey ?? "").trim().replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!key || reserved.has(key)) continue;
+    const value = String(rawValue ?? "").trim().replace(/\r?\n+/g, " ");
+    if (!value) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function normalizeCandidateTitleKey(rawTitle) {
+  const slug = normalizeSkillFeedbackKey(rawTitle);
+  if (slug) return slug;
+  return String(rawTitle ?? "").trim().toLowerCase();
+}
+
+function toCounterRows(counterMap, matcher = () => true, limit = 5) {
+  const out = [];
+  const map = counterMap && typeof counterMap === "object" ? counterMap : {};
+  for (const [eventType, rawCount] of Object.entries(map)) {
+    const count = normalizeCount(rawCount);
+    if (!eventType || count <= 0) continue;
+    if (!matcher(eventType)) continue;
+    out.push({
+      eventType,
+      count,
+    });
+  }
+  out.sort((left, right) => {
+    if (right.count !== left.count) return right.count - left.count;
+    return String(left.eventType).localeCompare(String(right.eventType));
+  });
+  return out.slice(0, Math.max(1, normalizeCount(limit) || 5));
+}
+
 function normalizeSkillNameCandidate(rawValue) {
   const source = String(rawValue ?? "").trim();
   if (!source) return "";
@@ -1023,6 +1114,9 @@ function evaluateSkillCandidatesForAutoPromotion(candidates, options = {}) {
   const minOccurrences = Math.max(1, Number(options.minCandidateOccurrences ?? 2));
   const lookbackDays = Math.max(1, Number(options.lookbackDays ?? 14));
   const minScore = normalizeScore(options.minScore, 0.6);
+  const feedbackBySkill = options.feedbackBySkill && typeof options.feedbackBySkill === "object"
+    ? options.feedbackBySkill
+    : {};
   const cutoffMs = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
 
   const groupMap = new Map();
@@ -1062,12 +1156,20 @@ function evaluateSkillCandidatesForAutoPromotion(candidates, options = {}) {
     const runDiversityScore = uniqueRunSet.size >= 2 ? 1 : (uniqueRunSet.size === 1 ? 0.5 : 0);
     const evidenceScore = hasEvidenceSignal(latest) ? 1 : 0;
     const structureScore = hasProblemAndApproachSignal(latest) ? 1 : 0.4;
+    const feedback = feedbackBySkill[skillName] && typeof feedbackBySkill[skillName] === "object"
+      ? feedbackBySkill[skillName]
+      : null;
+    const feedbackScore = normalizeScore(
+      feedback ? Number(feedback.effectivenessScore ?? 0.5) : 0.5,
+      0.5
+    );
     const score = normalizeScore(
-      (recurrenceScore * 0.45)
-      + (evidenceScore * 0.25)
-      + (issueDiversityScore * 0.15)
+      (recurrenceScore * 0.40)
+      + (evidenceScore * 0.20)
+      + (issueDiversityScore * 0.10)
       + (runDiversityScore * 0.05)
-      + (structureScore * 0.10),
+      + (structureScore * 0.10)
+      + (feedbackScore * 0.15),
       0
     );
 
@@ -1079,6 +1181,8 @@ function evaluateSkillCandidatesForAutoPromotion(candidates, options = {}) {
       occurrenceCount,
       uniqueIssues: uniqueIssueSet.size,
       uniqueRuns: uniqueRunSet.size,
+      feedbackScore,
+      feedback,
       score,
     };
 
@@ -1121,6 +1225,7 @@ function evaluateSkillCandidatesForAutoPromotion(candidates, options = {}) {
       minOccurrences,
       lookbackDays,
       minScore,
+      feedbackWeighted: true,
     },
   };
 }
@@ -2395,7 +2500,7 @@ export class ForgeOpsStore {
         projectId: params.projectId,
         issueId: issue.id,
         task: buildAutoIssueRunTask(issue),
-        runMode: parseRunModeLike(params.runMode, RUN_MODE_STANDARD),
+        runMode: parseRunModeLike(params.runMode, RUN_MODE_DEFAULT),
       });
       return {
         issue,
@@ -2983,12 +3088,18 @@ export class ForgeOpsStore {
     const maxPromotionsPerTick = Math.max(1, Number(params?.maxPromotionsPerTick ?? 1));
     const draft = params?.draft !== false;
     const roles = normalizeSkillPromotionRoles(params?.roles);
+    const candidates = this.listSkillCandidates(projectId);
+    const feedbackBySkill = this.buildProjectSkillEffectivenessMap({
+      projectId,
+      candidates,
+    });
     const evaluation = evaluateSkillCandidatesForAutoPromotion(
-      this.listSkillCandidates(projectId),
+      candidates,
       {
         minCandidateOccurrences: params?.minCandidateOccurrences,
         lookbackDays: params?.lookbackDays,
         minScore: params?.minScore,
+        feedbackBySkill,
       }
     );
 
@@ -3054,6 +3165,7 @@ export class ForgeOpsStore {
       promotedCount: promoted.length,
       skippedCount: skipped.length,
       failedCount: failed.length,
+      feedbackSkills: Object.keys(feedbackBySkill).length,
       policy: evaluation.policy,
     });
 
@@ -3066,6 +3178,7 @@ export class ForgeOpsStore {
       promoted,
       skipped,
       failed,
+      feedbackBySkill,
       policy: evaluation.policy,
     };
   }
@@ -3080,12 +3193,18 @@ export class ForgeOpsStore {
     const maxPromotionsPerTick = Math.max(1, Number(params?.maxPromotionsPerTick ?? 1));
     const requireProjectSkill = params?.requireProjectSkill !== false;
     const draft = params?.draft !== false;
+    const candidates = this.listSkillCandidates(projectId);
+    const feedbackBySkill = this.buildProjectSkillEffectivenessMap({
+      projectId,
+      candidates,
+    });
     const evaluation = evaluateSkillCandidatesForAutoPromotion(
-      this.listSkillCandidates(projectId),
+      candidates,
       {
         minCandidateOccurrences: params?.minCandidateOccurrences,
         lookbackDays: params?.lookbackDays,
         minScore: params?.minScore,
+        feedbackBySkill,
       }
     );
 
@@ -3165,6 +3284,7 @@ export class ForgeOpsStore {
       skippedCount: skipped.length,
       failedCount: failed.length,
       requireProjectSkill,
+      feedbackSkills: Object.keys(feedbackBySkill).length,
       policy: evaluation.policy,
     });
 
@@ -3178,6 +3298,7 @@ export class ForgeOpsStore {
       skipped,
       failed,
       requireProjectSkill,
+      feedbackBySkill,
       policy: evaluation.policy,
     };
   }
@@ -5004,8 +5125,24 @@ export class ForgeOpsStore {
       stepPolicies: {},
       stepOutputs: {},
     };
+    if (isObjectRecord(params?.cleanupContext)) {
+      context.cleanupContext = params.cleanupContext;
+    }
+    if (isObjectRecord(params?.contextOverrides)) {
+      for (const [key, value] of Object.entries(params.contextOverrides)) {
+        if (!key) continue;
+        if (isObjectRecord(context[key]) && isObjectRecord(value)) {
+          context[key] = {
+            ...context[key],
+            ...value,
+          };
+          continue;
+        }
+        context[key] = value;
+      }
+    }
 
-    const requestedRunMode = parseRunModeLike(params.runMode, RUN_MODE_STANDARD);
+    const requestedRunMode = parseRunModeLike(params.runMode, RUN_MODE_DEFAULT);
     const baseWorkflow = params.workflowOverride && typeof params.workflowOverride === "object"
       ? params.workflowOverride
       : resolveWorkflow(project.root_path);
@@ -6144,7 +6281,53 @@ export class ForgeOpsStore {
 
     const structuredCandidates = collectStructuredSkillCandidates(params?.structured);
     const artifactCandidates = collectArtifactSkillCandidates(params?.artifacts);
-    const candidates = [...structuredCandidates, ...artifactCandidates];
+    const runContext = safeJsonParse(run.context_json, {});
+    const inferredCleanupMode = String(run.workflow_id ?? "").trim() === "forgeops-cleanup-deep-v1"
+      ? "deep"
+      : "lite";
+    let cleanupContext = runContext?.cleanupContext && typeof runContext.cleanupContext === "object"
+      ? runContext.cleanupContext
+      : null;
+    if (!cleanupContext) {
+      try {
+        cleanupContext = this.buildCleanupRunContext({
+          projectId: project.id,
+          mode: inferredCleanupMode,
+          trigger: "inline-cleanup",
+          task: run.task,
+          now: params?.now ?? nowIso(),
+          excludeRunId: run.id,
+        });
+      } catch {
+        cleanupContext = null;
+      }
+    }
+    const eventSeedCandidates = this.buildEventDerivedSkillCandidates({
+      run,
+      step,
+      project,
+      cleanupContext,
+    });
+    const candidates = [];
+    const titleKeys = new Set();
+    const pushCandidate = (candidate) => {
+      if (!candidate || typeof candidate !== "object") return;
+      const title = String(candidate.title ?? "").trim();
+      const content = String(candidate.content ?? "").trim();
+      if (!title || !content) return;
+      const titleKey = normalizeCandidateTitleKey(title);
+      if (titleKey && titleKeys.has(titleKey)) return;
+      if (titleKey) titleKeys.add(titleKey);
+      candidates.push({
+        ...candidate,
+        title,
+        content,
+      });
+    };
+    for (const candidate of structuredCandidates) pushCandidate(candidate);
+    for (const candidate of artifactCandidates) pushCandidate(candidate);
+    for (const candidate of eventSeedCandidates) pushCandidate(candidate);
+
     if (candidates.length === 0) {
       return [];
     }
@@ -6170,6 +6353,10 @@ export class ForgeOpsStore {
 
       const absolutePath = path.join(outputDir, fileName);
       const relativePath = path.relative(project.root_path, absolutePath);
+      const extraMetadata = normalizeCandidateMetadata(candidate.metadata);
+      const extraMetadataRows = Object.entries(extraMetadata).map(
+        ([key, value]) => `- ${key}: ${value}`
+      );
       const markdown = [
         "# Skill Candidate",
         "",
@@ -6180,6 +6367,7 @@ export class ForgeOpsStore {
         `- step: ${step.step_key}`,
         `- issue: ${String(run.github_issue_id ?? "-") || "-"}`,
         `- generated_at: ${String(params?.now ?? nowIso())}`,
+        ...extraMetadataRows,
         "",
         "## Content",
         String(candidate.content ?? "").trim(),
@@ -6208,10 +6396,23 @@ export class ForgeOpsStore {
       });
     }
 
+    if (eventSeedCandidates.length > 0) {
+      this.emitEvent(run.id, step.id, "skills.candidate.event_seeded", {
+        runId: run.id,
+        stepId: step.id,
+        issueId: String(run.github_issue_id ?? ""),
+        count: eventSeedCandidates.length,
+        titles: eventSeedCandidates.map((row) => String(row.title ?? "").trim()).filter(Boolean),
+      });
+    }
+
     this.emitEvent(run.id, step.id, "skills.candidate.summary", {
       runId: run.id,
       stepId: step.id,
       count: persisted.length,
+      structuredCount: structuredCandidates.length,
+      artifactCount: artifactCandidates.length,
+      eventSeedCount: eventSeedCandidates.length,
       paths: persisted.map((item) => item.path),
     });
 
@@ -6246,6 +6447,659 @@ export class ForgeOpsStore {
       .prepare("SELECT * FROM events WHERE id > ? ORDER BY id ASC")
       .all(sinceId)
       .map((row) => ({ ...row, payload: safeJsonParse(row.payload_json, {}) }));
+  }
+
+  collectProjectEventWindowStats(params = {}) {
+    const projectId = String(params?.projectId ?? "").trim();
+    if (!projectId) {
+      return {
+        projectId: "",
+        since: "",
+        until: "",
+        eventCounts: {},
+        retryByStep: [],
+        failedByStep: [],
+      };
+    }
+
+    const nowMs = parseTimeMs(params?.until ?? nowIso()) || Date.now();
+    const lookbackDaysRaw = Number(params?.lookbackDays ?? CLEANUP_CONTEXT_DEFAULT_LOOKBACK_DAYS);
+    const lookbackDays = Number.isFinite(lookbackDaysRaw) && lookbackDaysRaw > 0
+      ? Math.floor(lookbackDaysRaw)
+      : CLEANUP_CONTEXT_DEFAULT_LOOKBACK_DAYS;
+    const sinceMsRaw = parseTimeMs(params?.since);
+    const sinceMs = sinceMsRaw > 0
+      ? sinceMsRaw
+      : Math.max(0, nowMs - (lookbackDays * 24 * 60 * 60 * 1000));
+    const since = toIsoFromMs(sinceMs);
+    const until = toIsoFromMs(nowMs);
+    const projectPayloadMatch = `%\"projectId\":\"${projectId}\"%`;
+
+    const eventCounter = new Map();
+    const addRows = (rows) => {
+      for (const row of rows) {
+        const eventType = String(row?.event_type ?? "").trim();
+        if (!eventType) continue;
+        const count = normalizeCount(row?.count);
+        if (count <= 0) continue;
+        eventCounter.set(eventType, normalizeCount(eventCounter.get(eventType)) + count);
+      }
+    };
+
+    const runScopedRows = this.db
+      .prepare(
+        `SELECT e.event_type AS event_type, COUNT(1) AS count
+         FROM events e
+         JOIN runs r ON r.id = e.run_id
+         WHERE r.project_id = ?
+           AND e.ts >= ?
+           AND e.ts < ?
+         GROUP BY e.event_type`
+      )
+      .all(projectId, since, until);
+    addRows(runScopedRows);
+
+    const projectScopedRows = this.db
+      .prepare(
+        `SELECT event_type, COUNT(1) AS count
+         FROM events
+         WHERE run_id IS NULL
+           AND ts >= ?
+           AND ts < ?
+           AND payload_json LIKE ?
+         GROUP BY event_type`
+      )
+      .all(since, until, projectPayloadMatch);
+    addRows(projectScopedRows);
+
+    const retryByStep = this.db
+      .prepare(
+        `SELECT COALESCE(NULLIF(TRIM(s.step_key), ''), 'unknown') AS step_key, COUNT(1) AS count
+         FROM events e
+         JOIN steps s ON s.id = e.step_id
+         JOIN runs r ON r.id = e.run_id
+         WHERE r.project_id = ?
+           AND e.event_type = 'step.retry'
+           AND e.ts >= ?
+           AND e.ts < ?
+         GROUP BY s.step_key
+         ORDER BY count DESC, s.step_key ASC`
+      )
+      .all(projectId, since, until)
+      .map((row) => ({
+        stepKey: String(row?.step_key ?? "unknown").trim() || "unknown",
+        count: normalizeCount(row?.count),
+      }))
+      .filter((row) => row.count > 0);
+
+    const failedByStep = this.db
+      .prepare(
+        `SELECT COALESCE(NULLIF(TRIM(s.step_key), ''), 'unknown') AS step_key, COUNT(1) AS count
+         FROM events e
+         JOIN steps s ON s.id = e.step_id
+         JOIN runs r ON r.id = e.run_id
+         WHERE r.project_id = ?
+           AND e.event_type = 'step.failed'
+           AND e.ts >= ?
+           AND e.ts < ?
+         GROUP BY s.step_key
+         ORDER BY count DESC, s.step_key ASC`
+      )
+      .all(projectId, since, until)
+      .map((row) => ({
+        stepKey: String(row?.step_key ?? "unknown").trim() || "unknown",
+        count: normalizeCount(row?.count),
+      }))
+      .filter((row) => row.count > 0);
+
+    return {
+      projectId,
+      since,
+      until,
+      eventCounts: Object.fromEntries(eventCounter.entries()),
+      retryByStep,
+      failedByStep,
+    };
+  }
+
+  buildCleanupRunContext(params = {}) {
+    const projectId = String(params?.projectId ?? "").trim();
+    if (!projectId) {
+      throw new Error("projectId is required");
+    }
+
+    const mode = String(params?.mode ?? "deep").trim().toLowerCase() === "lite"
+      ? "lite"
+      : "deep";
+    const trigger = String(params?.trigger ?? "").trim() || "manual";
+    const task = String(params?.task ?? "").trim();
+    const excludeRunId = String(params?.excludeRunId ?? "").trim();
+    const nowMs = parseTimeMs(params?.now ?? nowIso()) || Date.now();
+    const now = toIsoFromMs(nowMs);
+    const lookbackDaysRaw = Number(params?.lookbackDays ?? CLEANUP_CONTEXT_DEFAULT_LOOKBACK_DAYS);
+    const lookbackDays = Number.isFinite(lookbackDaysRaw) && lookbackDaysRaw > 0
+      ? Math.floor(lookbackDaysRaw)
+      : CLEANUP_CONTEXT_DEFAULT_LOOKBACK_DAYS;
+
+    const baselineQueryBase = `SELECT
+        r.id AS run_id,
+        r.workflow_id AS workflow_id,
+        r.updated_at AS run_updated_at,
+        s.summary AS step_summary,
+        s.ended_at AS step_ended_at
+      FROM runs r
+      JOIN steps s ON s.run_id = r.id
+      WHERE r.project_id = ?
+        AND s.step_key = 'cleanup'
+        AND s.status = 'done'`;
+    const baselineRow = excludeRunId
+      ? this.db
+          .prepare(
+            `${baselineQueryBase}
+             AND r.id != ?
+             ORDER BY COALESCE(NULLIF(s.ended_at, ''), r.updated_at) DESC
+             LIMIT 1`
+          )
+          .get(projectId, excludeRunId)
+      : this.db
+          .prepare(
+            `${baselineQueryBase}
+             ORDER BY COALESCE(NULLIF(s.ended_at, ''), r.updated_at) DESC
+             LIMIT 1`
+          )
+          .get(projectId);
+
+    const baselineAt = String(
+      baselineRow?.step_ended_at
+      ?? baselineRow?.run_updated_at
+      ?? ""
+    ).trim();
+    const baselineAtMs = parseTimeMs(baselineAt);
+    const defaultWindowStartMs = Math.max(0, nowMs - (lookbackDays * 24 * 60 * 60 * 1000));
+    const windowStartMs = baselineAtMs > 0 ? baselineAtMs : defaultWindowStartMs;
+    const windowStart = toIsoFromMs(windowStartMs);
+
+    const eventStats = this.collectProjectEventWindowStats({
+      projectId,
+      since: windowStart,
+      until: now,
+      lookbackDays,
+    });
+    const eventCounts = eventStats.eventCounts && typeof eventStats.eventCounts === "object"
+      ? eventStats.eventCounts
+      : {};
+    const sumByMatcher = (matcher) => Object.entries(eventCounts)
+      .reduce((acc, [eventType, count]) => (matcher(eventType) ? acc + normalizeCount(count) : acc), 0);
+
+    const runStatusRows = this.db
+      .prepare(
+        `SELECT status, COUNT(1) AS count
+         FROM runs
+         WHERE project_id = ?
+           AND created_at >= ?
+           AND created_at < ?
+         GROUP BY status`
+      )
+      .all(projectId, windowStart, now);
+    const runStatusCounter = {};
+    let totalRuns = 0;
+    for (const row of runStatusRows) {
+      const status = String(row?.status ?? "").trim() || "unknown";
+      const count = normalizeCount(row?.count);
+      runStatusCounter[status] = count;
+      totalRuns += count;
+    }
+
+    const stepRetryEvents = normalizeCount(eventCounts["step.retry"]);
+    const stepFailedEvents = normalizeCount(eventCounts["step.failed"]);
+    const docsCheckPassed = normalizeCount(eventCounts["docs.check.passed"]);
+    const docsCheckFailed = normalizeCount(eventCounts["docs.check.failed"]);
+    const schedulerMissedRecoveryStarted = sumByMatcher((eventType) => eventType.endsWith(".missed_recovery_started"));
+    const schedulerMissedRecoveryFailed = sumByMatcher((eventType) => eventType.endsWith(".missed_recovery_failed"));
+    const schedulerCleanupSkippedBusy = normalizeCount(eventCounts["scheduler.cleanup.skipped_busy"]);
+    const schedulerCleanupSkippedInflight = normalizeCount(eventCounts["scheduler.cleanup.skipped_inflight"]);
+    const projectPromoted = normalizeCount(eventCounts["skills.promotion.created"]);
+    const globalPromoted = normalizeCount(eventCounts["skills.global.promoted"]);
+    const projectPromotionTickFailed = normalizeCount(eventCounts["scheduler.skill_promotion.tick_failed"]);
+    const globalPromotionTickFailed = normalizeCount(eventCounts["scheduler.global_skill_promotion.tick_failed"]);
+
+    const failureEvents = toCounterRows(
+      eventCounts,
+      (eventType) => eventType.includes("failed") || eventType.includes("retry"),
+      6
+    );
+    const successEvents = toCounterRows(
+      eventCounts,
+      (eventType) => eventType.endsWith(".completed") || eventType.endsWith(".done") || eventType === "run.completed",
+      6
+    );
+
+    const baselineRunId = String(baselineRow?.run_id ?? "").trim();
+    return {
+      mode,
+      trigger,
+      task,
+      generatedAt: now,
+      baseline: {
+        available: Boolean(baselineRunId),
+        runId: baselineRunId || "",
+        workflowId: String(baselineRow?.workflow_id ?? "").trim(),
+        at: baselineAtMs > 0 ? toIsoFromMs(baselineAtMs) : "",
+        summary: clipText(String(baselineRow?.step_summary ?? "").trim(), 320),
+      },
+      delta: {
+        windowStart,
+        windowEnd: now,
+        windowDays: Number(((nowMs - windowStartMs) / (24 * 60 * 60 * 1000)).toFixed(2)),
+        runs: {
+          total: totalRuns,
+          completed: normalizeCount(runStatusCounter.completed),
+          failed: normalizeCount(runStatusCounter.failed),
+          running: normalizeCount(runStatusCounter.running),
+          paused: normalizeCount(runStatusCounter.paused),
+          stepRetryEvents,
+          stepFailedEvents,
+        },
+        docs: {
+          passed: docsCheckPassed,
+          failed: docsCheckFailed,
+        },
+        scheduler: {
+          missedRecoveryStarted: schedulerMissedRecoveryStarted,
+          missedRecoveryFailed: schedulerMissedRecoveryFailed,
+          cleanupSkippedBusy: schedulerCleanupSkippedBusy,
+          cleanupSkippedInflight: schedulerCleanupSkippedInflight,
+        },
+        promotions: {
+          projectPromoted,
+          globalPromoted,
+          projectTickFailed: projectPromotionTickFailed,
+          globalTickFailed: globalPromotionTickFailed,
+        },
+        hotspots: {
+          retrySteps: eventStats.retryByStep.slice(0, 6),
+          failedSteps: eventStats.failedByStep.slice(0, 6),
+          failureEvents,
+          successEvents,
+        },
+      },
+    };
+  }
+
+  buildEventDerivedSkillCandidates(params = {}) {
+    const cleanupContext = params?.cleanupContext && typeof params.cleanupContext === "object"
+      ? params.cleanupContext
+      : null;
+    const delta = cleanupContext?.delta && typeof cleanupContext.delta === "object"
+      ? cleanupContext.delta
+      : null;
+    if (!delta) return [];
+
+    const windowStart = String(delta.windowStart ?? "").trim();
+    const windowEnd = String(delta.windowEnd ?? "").trim();
+    const runs = delta.runs && typeof delta.runs === "object" ? delta.runs : {};
+    const docs = delta.docs && typeof delta.docs === "object" ? delta.docs : {};
+    const scheduler = delta.scheduler && typeof delta.scheduler === "object" ? delta.scheduler : {};
+    const promotions = delta.promotions && typeof delta.promotions === "object" ? delta.promotions : {};
+    const hotspots = delta.hotspots && typeof delta.hotspots === "object" ? delta.hotspots : {};
+    const retrySteps = Array.isArray(hotspots.retrySteps) ? hotspots.retrySteps : [];
+    const failedSteps = Array.isArray(hotspots.failedSteps) ? hotspots.failedSteps : [];
+    const failureEvents = Array.isArray(hotspots.failureEvents) ? hotspots.failureEvents : [];
+    const successEvents = Array.isArray(hotspots.successEvents) ? hotspots.successEvents : [];
+
+    const runFailed = normalizeCount(runs.failed);
+    const runCompleted = normalizeCount(runs.completed);
+    const stepRetryEvents = normalizeCount(runs.stepRetryEvents);
+    const stepFailedEvents = normalizeCount(runs.stepFailedEvents);
+    const docsFailed = normalizeCount(docs.failed);
+    const missedRecoveryStarted = normalizeCount(scheduler.missedRecoveryStarted);
+    const promotionTickFailed = normalizeCount(promotions.projectTickFailed) + normalizeCount(promotions.globalTickFailed);
+
+    const candidates = [];
+    const pushCandidate = (params2) => {
+      const title = String(params2?.title ?? "").trim();
+      const content = String(params2?.content ?? "").trim();
+      if (!title || !content) return;
+      candidates.push({
+        title,
+        content,
+        source: "events",
+        metadata: normalizeCandidateMetadata({
+          category: String(params2?.category ?? "event-seed"),
+          trigger: String(cleanupContext.trigger ?? "cleanup"),
+          mode: String(cleanupContext.mode ?? "lite"),
+          window_start: windowStart,
+          window_end: windowEnd,
+        }),
+        __priority: normalizeCount(params2?.priority),
+      });
+    };
+
+    const retryStepText = retrySteps.length > 0
+      ? retrySteps.slice(0, 3).map((item) => `${item.stepKey}:${normalizeCount(item.count)}`).join(", ")
+      : "-";
+    const failedStepText = failedSteps.length > 0
+      ? failedSteps.slice(0, 3).map((item) => `${item.stepKey}:${normalizeCount(item.count)}`).join(", ")
+      : "-";
+    const failureEventText = failureEvents.length > 0
+      ? failureEvents.slice(0, 4).map((item) => `${item.eventType}:${normalizeCount(item.count)}`).join(", ")
+      : "-";
+    const successEventText = successEvents.length > 0
+      ? successEvents.slice(0, 4).map((item) => `${item.eventType}:${normalizeCount(item.count)}`).join(", ")
+      : "-";
+
+    if (runFailed > 0 || stepFailedEvents > 0 || stepRetryEvents >= 3) {
+      pushCandidate({
+        title: "Failure Hotspot Hardening Playbook",
+        category: "failure-hotspots",
+        priority: 100 + runFailed + stepFailedEvents,
+        content: [
+          "## Problem",
+          `- Repeated failure/retry signals appeared in cleanup window (${windowStart} -> ${windowEnd}).`,
+          `- Run failed count: ${runFailed}; step failed events: ${stepFailedEvents}; step retry events: ${stepRetryEvents}.`,
+          "",
+          "## Approach",
+          "- Convert recurring failure hotspots into mechanical checks (preflight/lint/test scripts) before risky steps.",
+          "- Add deterministic guardrails for top failing steps and standardize remediation notes into reusable checklists.",
+          "",
+          "## Evidence",
+          `- Failure events: ${failureEventText}`,
+          `- Failed steps: ${failedStepText}`,
+          `- Retry hotspots: ${retryStepText}`,
+          "",
+          "## Adoption Scope",
+          "- Apply to implement/test/review entry checks and retry-heavy step templates first.",
+        ].join("\n"),
+      });
+    }
+
+    if (docsFailed > 0) {
+      pushCandidate({
+        title: "Docs Drift Guardrail Automation",
+        category: "docs-drift",
+        priority: 80 + docsFailed,
+        content: [
+          "## Problem",
+          "- Documentation drift was detected repeatedly during cleanup.",
+          `- docs.check.failed count: ${docsFailed}.`,
+          "",
+          "## Approach",
+          "- Promote docs freshness/structure checks into mandatory guardrails in cleanup/test flows.",
+          "- Standardize doc map update checklists when workflow/config/files are changed.",
+          "",
+          "## Evidence",
+          `- docs.check.failed: ${docsFailed}`,
+          `- Window: ${windowStart} -> ${windowEnd}`,
+          "",
+          "## Adoption Scope",
+          "- Apply to all PRs touching docs/, workflow config, AGENTS.md, and architecture references.",
+        ].join("\n"),
+      });
+    }
+
+    if (missedRecoveryStarted > 0 || promotionTickFailed > 0) {
+      pushCandidate({
+        title: "Scheduler Recovery And Promotion Resilience",
+        category: "scheduler-resilience",
+        priority: 70 + missedRecoveryStarted + promotionTickFailed,
+        content: [
+          "## Problem",
+          "- Scheduler recovery or promotion ticks showed instability signals.",
+          `- missed_recovery_started: ${missedRecoveryStarted}; promotion tick failures: ${promotionTickFailed}.`,
+          "",
+          "## Approach",
+          "- Add idempotent retry guards and explicit backoff envelopes for scheduler-triggered maintenance tasks.",
+          "- Emit structured diagnostics for each failed tick to support deterministic remediation.",
+          "",
+          "## Evidence",
+          `- Failure events: ${failureEventText}`,
+          `- Success events: ${successEventText}`,
+          "",
+          "## Adoption Scope",
+          "- Apply to cleanup/skillPromotion/globalSkillPromotion scheduler jobs and recovery handlers.",
+        ].join("\n"),
+      });
+    }
+
+    if (runCompleted >= 3 && runFailed === 0 && stepRetryEvents > 0) {
+      pushCandidate({
+        title: "Successful Retry Resolution Pattern",
+        category: "success-playbook",
+        priority: 60 + runCompleted,
+        content: [
+          "## Problem",
+          "- Retries happened but converged to successful delivery; the successful strategy is not yet codified.",
+          "",
+          "## Approach",
+          "- Extract the successful retry sequence into a reusable skill/checklist and reuse it before escalating to manual intervention.",
+          "- Preserve commands, checks, and stop conditions as a mechanical retry playbook.",
+          "",
+          "## Evidence",
+          `- run.completed: ${runCompleted}; run.failed: ${runFailed}; step.retry: ${stepRetryEvents}`,
+          `- Success events: ${successEventText}`,
+          "",
+          "## Adoption Scope",
+          "- Apply to steps with historical retries where final outcomes are mostly successful.",
+        ].join("\n"),
+      });
+    }
+
+    candidates.sort((left, right) => {
+      const lp = normalizeCount(left.__priority);
+      const rp = normalizeCount(right.__priority);
+      if (rp !== lp) return rp - lp;
+      return String(left.title).localeCompare(String(right.title));
+    });
+    return candidates
+      .slice(0, CLEANUP_EVENT_SEED_MAX_CANDIDATES)
+      .map((row) => {
+        const { __priority, ...rest } = row;
+        return rest;
+      });
+  }
+
+  buildProjectSkillEffectivenessMap(params = {}) {
+    const projectId = String(params?.projectId ?? "").trim();
+    if (!projectId) return {};
+    const candidates = Array.isArray(params?.candidates) ? params.candidates : [];
+    const skillNames = new Set();
+    for (const candidate of candidates) {
+      const skillName = normalizeSkillFeedbackKey(deriveSkillNameFromCandidate(candidate));
+      if (!skillName) continue;
+      skillNames.add(skillName);
+    }
+    if (skillNames.size === 0) return {};
+
+    let activeSkillKeys = new Set();
+    try {
+      const resolved = this.resolveProjectSkills(projectId);
+      const out = new Set();
+      const byRole = resolved?.agentSkills && typeof resolved.agentSkills === "object"
+        ? resolved.agentSkills
+        : {};
+      for (const roleSkills of Object.values(byRole)) {
+        const items = Array.isArray(roleSkills) ? roleSkills : [];
+        for (const item of items) {
+          const fromName = normalizeSkillFeedbackKey(item?.name);
+          if (fromName) out.add(fromName);
+          const absPath = String(item?.absolutePath ?? "").trim();
+          if (absPath) {
+            const fromPath = normalizeSkillFeedbackKey(path.basename(path.dirname(absPath)));
+            if (fromPath) out.add(fromPath);
+          }
+          const relPath = String(item?.path ?? "").trim().replace(/\\/g, "/");
+          if (relPath) {
+            const fromRel = normalizeSkillFeedbackKey(path.basename(path.dirname(relPath)));
+            if (fromRel) out.add(fromRel);
+          }
+        }
+      }
+      activeSkillKeys = out;
+    } catch {
+      activeSkillKeys = new Set();
+    }
+
+    const projectPayloadMatch = `%\"projectId\":\"${projectId}\"%`;
+    const promotionRows = this.db
+      .prepare(
+        `SELECT ts, payload_json
+         FROM events
+         WHERE run_id IS NULL
+           AND event_type IN ('skills.promotion.created', 'skills.global.promoted')
+           AND payload_json LIKE ?
+         ORDER BY ts DESC`
+      )
+      .all(projectPayloadMatch);
+    const promotionBySkill = new Map();
+    for (const row of promotionRows) {
+      const payload = safeJsonParse(row?.payload_json, {});
+      const skillName = normalizeSkillFeedbackKey(payload?.skillName ?? payload?.skill_name);
+      if (!skillName) continue;
+      const ts = String(row?.ts ?? "").trim();
+      const tsMs = parseTimeMs(ts);
+      const current = promotionBySkill.get(skillName) ?? {
+        promotedCount: 0,
+        latestPromotionAt: "",
+        latestPromotionAtMs: 0,
+      };
+      current.promotedCount += 1;
+      if (tsMs > current.latestPromotionAtMs) {
+        current.latestPromotionAtMs = tsMs;
+        current.latestPromotionAt = ts;
+      }
+      promotionBySkill.set(skillName, current);
+    }
+
+    const nowMs = Date.now();
+    const windowDaysRaw = Number(params?.windowDays ?? SKILL_FEEDBACK_WINDOW_DAYS);
+    const windowDays = Number.isFinite(windowDaysRaw) && windowDaysRaw > 0
+      ? Math.floor(windowDaysRaw)
+      : SKILL_FEEDBACK_WINDOW_DAYS;
+    const windowMs = windowDays * 24 * 60 * 60 * 1000;
+    const minSampleRunsRaw = Number(params?.minSampleRuns ?? SKILL_FEEDBACK_MIN_SAMPLE_RUNS);
+    const minSampleRuns = Number.isFinite(minSampleRunsRaw) && minSampleRunsRaw > 0
+      ? Math.floor(minSampleRunsRaw)
+      : SKILL_FEEDBACK_MIN_SAMPLE_RUNS;
+
+    const runStatusStmt = this.db.prepare(
+      `SELECT status, COUNT(1) AS count
+       FROM runs
+       WHERE project_id = ?
+         AND created_at >= ?
+         AND created_at < ?
+       GROUP BY status`
+    );
+    const retryCountStmt = this.db.prepare(
+      `SELECT COUNT(1) AS total
+       FROM events e
+       JOIN runs r ON r.id = e.run_id
+       WHERE r.project_id = ?
+         AND e.event_type = 'step.retry'
+         AND e.ts >= ?
+         AND e.ts < ?`
+    );
+    const collectRunWindowStats = (startMs, endMs) => {
+      const start = toIsoFromMs(startMs);
+      const end = toIsoFromMs(endMs);
+      if (!start || !end || start >= end) {
+        return {
+          runs: 0,
+          completed: 0,
+          failed: 0,
+          successRate: 0,
+          retryEvents: 0,
+          retryPerRun: 0,
+        };
+      }
+      const statusRows = runStatusStmt.all(projectId, start, end);
+      const byStatus = {};
+      let totalRuns = 0;
+      for (const statusRow of statusRows) {
+        const status = String(statusRow?.status ?? "").trim() || "unknown";
+        const count = normalizeCount(statusRow?.count);
+        byStatus[status] = count;
+        totalRuns += count;
+      }
+      const retryEvents = normalizeCount(retryCountStmt.get(projectId, start, end)?.total);
+      const completed = normalizeCount(byStatus.completed);
+      const failed = normalizeCount(byStatus.failed);
+      return {
+        runs: totalRuns,
+        completed,
+        failed,
+        successRate: computeRate(completed, totalRuns),
+        retryEvents,
+        retryPerRun: totalRuns > 0
+          ? Number((retryEvents / totalRuns).toFixed(3))
+          : 0,
+      };
+    };
+
+    const feedback = {};
+    for (const skillName of skillNames) {
+      const promotion = promotionBySkill.get(skillName);
+      const activeInRoleMap = activeSkillKeys.has(skillName);
+      if (!promotion || promotion.latestPromotionAtMs <= 0) {
+        feedback[skillName] = {
+          source: "promotion-outcome",
+          activeInRoleMap,
+          promotedCount: 0,
+          latestPromotionAt: "",
+          sampleSufficient: false,
+          effectivenessScore: 0.5,
+          before: {
+            runs: 0,
+            successRate: 0,
+            retryPerRun: 0,
+          },
+          after: {
+            runs: 0,
+            successRate: 0,
+            retryPerRun: 0,
+          },
+          note: "no_promotion_history",
+        };
+        continue;
+      }
+
+      const promotionAtMs = promotion.latestPromotionAtMs;
+      const beforeStartMs = Math.max(0, promotionAtMs - windowMs);
+      const afterEndMs = Math.min(nowMs, promotionAtMs + windowMs);
+      const beforeStats = collectRunWindowStats(beforeStartMs, promotionAtMs);
+      const afterStats = collectRunWindowStats(promotionAtMs, afterEndMs);
+      const sampleSufficient = beforeStats.runs >= minSampleRuns && afterStats.runs >= minSampleRuns;
+      const successDelta = Number((afterStats.successRate - beforeStats.successRate).toFixed(3));
+      const retryDelta = Number((beforeStats.retryPerRun - afterStats.retryPerRun).toFixed(3));
+      const activeBias = activeInRoleMap ? 0.05 : -0.05;
+      const rawEffectiveness = sampleSufficient
+        ? 0.5 + (successDelta * 0.6) + (retryDelta * 0.25) + activeBias
+        : 0.5 + (activeBias * 0.5);
+
+      feedback[skillName] = {
+        source: "promotion-outcome",
+        activeInRoleMap,
+        promotedCount: normalizeCount(promotion.promotedCount),
+        latestPromotionAt: promotion.latestPromotionAt,
+        sampleSufficient,
+        effectivenessScore: normalizeScore(rawEffectiveness, 0.5),
+        before: {
+          runs: beforeStats.runs,
+          successRate: beforeStats.successRate,
+          retryPerRun: beforeStats.retryPerRun,
+        },
+        after: {
+          runs: afterStats.runs,
+          successRate: afterStats.successRate,
+          retryPerRun: afterStats.retryPerRun,
+        },
+        deltas: {
+          successRate: successDelta,
+          retryPerRun: retryDelta,
+        },
+        note: sampleSufficient ? "window_compared" : "insufficient_samples",
+      };
+    }
+    return feedback;
   }
 
   countRecentResumeFailures(stepId, windowMinutes = 30) {
