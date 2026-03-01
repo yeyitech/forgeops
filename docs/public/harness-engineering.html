@@ -739,8 +739,8 @@
       .screenshots-grid {
         margin-top: var(--space-3);
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.75rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: clamp(0.9rem, 2vw, 1.4rem);
       }
 
       .screenshot {
@@ -753,7 +753,8 @@
       .screenshot img {
         display: block;
         width: 100%;
-        height: auto;
+        height: clamp(220px, 24vw, 340px);
+        object-fit: cover;
       }
 
       .screenshot figcaption {
@@ -761,6 +762,9 @@
         color: var(--text-dim);
         font-size: 0.84rem;
         line-height: 1.5;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .cta-block {
@@ -846,10 +850,6 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
-        .screenshots-grid {
-          grid-template-columns: 1fr;
-        }
-
         .orbit-node {
           width: 45%;
         }
@@ -864,7 +864,8 @@
         .cards,
         .pillars-grid,
         .highlights,
-        .signal-grid {
+        .signal-grid,
+        .screenshots-grid {
           grid-template-columns: 1fr;
         }
 
