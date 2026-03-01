@@ -35,3 +35,20 @@ features:
 - 用户手册：[/user-guide](/user-guide)
 - 文档地图：[/00-index](/00-index)
 - 英文入口：[/en/](/en/)
+
+## 截图预览
+
+<div class="screenshots-grid">
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-console-home.png" alt="ForgeOps 控制台首页截图" loading="lazy" />
+    <figcaption>控制台首页：快速查看项目、运行状态和工作入口。</figcaption>
+  </figure>
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-system-settings.png" alt="ForgeOps 系统设置页面截图" loading="lazy" />
+    <figcaption>系统设置：集中管理运行环境、凭据与全局配置。</figcaption>
+  </figure>
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-codex-skill.png" alt="Codex 中使用 ForgeOps 技能截图" loading="lazy" />
+    <figcaption>Codex 直接调用 ForgeOps 技能：让用户在会话中即刻进入控制面工作流。</figcaption>
+  </figure>
+</div>

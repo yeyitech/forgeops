@@ -50,3 +50,20 @@ features:
 - User Quickstart: [/user-quickstart](/user-quickstart)
 - User Guide: [/user-guide](/user-guide)
 - Docs Index: [/00-index](/00-index)
+
+## Product Screenshots
+
+<div class="screenshots-grid">
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-console-home.png" alt="ForgeOps console home dashboard screenshot" loading="lazy" />
+    <figcaption>ForgeOps 控制台首页：项目运行态与流程入口总览。</figcaption>
+  </figure>
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-system-settings.png" alt="ForgeOps system settings screenshot" loading="lazy" />
+    <figcaption>系统设置页：运行时、凭据与基础配置集中管理。</figcaption>
+  </figure>
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-codex-skill.png" alt="Using ForgeOps skill inside Codex screenshot" loading="lazy" />
+    <figcaption>在 Codex 内直接使用 ForgeOps 技能：用户可直接在会话里调用 ForgeOps 工作流能力。</figcaption>
+  </figure>
+</div>

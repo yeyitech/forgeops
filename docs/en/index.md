@@ -35,3 +35,20 @@ features:
 - User Guide: [/user-guide](/user-guide)
 - Docs Index: [/00-index](/00-index)
 - Chinese Entry: [/zh/](/zh/)
+
+## Screenshots
+
+<div class="screenshots-grid">
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-console-home.png" alt="ForgeOps console home dashboard screenshot" loading="lazy" />
+    <figcaption>Console Home: a single view of projects, run states, and workflow entrypoints.</figcaption>
+  </figure>
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-system-settings.png" alt="ForgeOps system settings screenshot" loading="lazy" />
+    <figcaption>System Settings: manage runtime, credentials, and global configuration in one place.</figcaption>
+  </figure>
+  <figure class="screenshot-card">
+    <img src="/images/forgeops-codex-skill.png" alt="ForgeOps skill usage inside Codex screenshot" loading="lazy" />
+    <figcaption>Use ForgeOps skill directly inside Codex to enter the control-plane workflow from chat.</figcaption>
+  </figure>
+</div>
