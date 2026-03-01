@@ -37,6 +37,15 @@
   height: 20px;
 }
 
+.forgeops-nav-meta .meta-badge {
+  border-radius: 999px;
+  touch-action: manipulation;
+}
+
+.forgeops-nav-meta .meta-badge:hover {
+  opacity: 0.9;
+}
+
 .forgeops-nav-meta .lang-pill {
   display: inline-flex;
   align-items: center;
@@ -50,11 +59,18 @@
   font-weight: 700;
   padding: 0 8px;
   text-decoration: none;
+  touch-action: manipulation;
 }
 
 .forgeops-nav-meta .lang-pill:hover {
   border-color: var(--vp-c-brand-2);
   color: var(--vp-c-brand-2);
+}
+
+.forgeops-nav-meta .meta-badge:focus-visible,
+.forgeops-nav-meta .lang-pill:focus-visible {
+  outline: 2px solid var(--vp-c-brand-2);
+  outline-offset: 2px;
 }
 
 @media (max-width: 1180px) {

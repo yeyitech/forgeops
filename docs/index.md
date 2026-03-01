@@ -20,8 +20,8 @@ hero:
       text: English Entry /en/
       link: /en/
     - theme: alt
-      text: Brand Story
-      link: /zh/brand
+      text: Brand HTML
+      link: /harness-engineering.html
 features:
   - title: Issue-Driven Delivery
     details: 从 GitHub Issue 到 Run/Step/PR 的链路结构化执行，减少流程分裂。
@@ -46,6 +46,7 @@ features:
 
 - Brand Page (ZH): [/zh/brand](/zh/brand)
 - Brand Page (EN): [/en/brand](/en/brand)
+- Brand Page (HTML): [/harness-engineering.html](/harness-engineering.html)
 - User Quickstart: [/user-quickstart](/user-quickstart)
 - User Guide: [/user-guide](/user-guide)
 - Docs Index: [/00-index](/00-index)

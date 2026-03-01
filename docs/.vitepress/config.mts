@@ -35,7 +35,7 @@ export default defineConfig({
       { text: "Home", link: "/" },
       { text: "中文", link: "/zh/" },
       { text: "English", link: "/en/" },
-      { text: "Brand", link: "/zh/brand" },
+      { text: "Brand (HTML)", link: "/harness-engineering.html" },
       { text: "Docs", link: "/00-index" },
     ],
     sidebar: [
@@ -44,6 +44,7 @@ export default defineConfig({
         items: [
           { text: "中文入口 /zh/", link: "/zh/" },
           { text: "English Entry /en/", link: "/en/" },
+          { text: "品牌完整页（HTML）", link: "/harness-engineering.html" },
           { text: "品牌页（中文）", link: "/zh/brand" },
           { text: "Brand Page (English)", link: "/en/brand" },
         ],

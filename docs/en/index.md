@@ -16,8 +16,8 @@ hero:
       text: User Quickstart
       link: /user-quickstart
     - theme: alt
-      text: User Guide
-      link: /user-guide
+      text: Full Brand HTML
+      link: /harness-engineering.html
 features:
   - title: Why ForgeOps
     details: Focus on durable delivery quality, not only faster code generation.
@@ -30,6 +30,7 @@ features:
 ## English Navigation
 
 - Brand Page: [/en/brand](/en/brand)
+- Full Brand HTML: [/harness-engineering.html](/harness-engineering.html)
 - User Quickstart: [/user-quickstart](/user-quickstart)
 - User Guide: [/user-guide](/user-guide)
 - Docs Index: [/00-index](/00-index)

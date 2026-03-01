@@ -16,8 +16,8 @@ hero:
       text: 1 页上手卡
       link: /user-quickstart
     - theme: alt
-      text: 用户手册
-      link: /user-guide
+      text: 品牌完整页（HTML）
+      link: /harness-engineering.html
 features:
   - title: Why ForgeOps
     details: 不止提升 AI 写码速度，更关注稳定性、可追踪性和复发率下降。
@@ -30,6 +30,7 @@ features:
 ## 中文导航
 
 - 品牌页：[/zh/brand](/zh/brand)
+- 品牌完整页（HTML）：[/harness-engineering.html](/harness-engineering.html)
 - 1 页上手卡：[/user-quickstart](/user-quickstart)
 - 用户手册：[/user-guide](/user-guide)
 - 文档地图：[/00-index](/00-index)

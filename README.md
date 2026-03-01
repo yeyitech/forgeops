@@ -180,6 +180,7 @@ forgeops issue create <projectId> "重构鉴权链路" --mode standard
 - 顶部导航：GitHub Star/Fork 按钮 + 版本标识 + 语言切换
 - 双语入口：`/zh/`（中文）与 `/en/`（English）
 - 品牌页：`/zh/brand` 与 `/en/brand`
+- 品牌完整页（HTML）：`/harness-engineering.html`
 
 本地预览：
 

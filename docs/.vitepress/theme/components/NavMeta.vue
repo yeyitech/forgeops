@@ -33,16 +33,16 @@ const enLink = computed(() => withBase("/en/"));
 
 <template>
   <div class="forgeops-nav-meta">
-    <a class="meta-badge" :href="repoUrl" target="_blank" rel="noreferrer">
-      <img :src="starBadge" alt="GitHub stars" />
+    <a class="meta-badge" :href="repoUrl" target="_blank" rel="noopener noreferrer" aria-label="View GitHub stars">
+      <img :src="starBadge" alt="GitHub stars" width="95" height="20" />
     </a>
-    <a class="meta-badge" :href="`${repoUrl}/fork`" target="_blank" rel="noreferrer">
-      <img :src="forkBadge" alt="GitHub forks" />
+    <a class="meta-badge" :href="`${repoUrl}/fork`" target="_blank" rel="noopener noreferrer" aria-label="Fork this repository">
+      <img :src="forkBadge" alt="GitHub forks" width="95" height="20" />
     </a>
-    <a class="meta-badge" :href="repoUrl" target="_blank" rel="noreferrer">
-      <img :src="versionBadge" alt="ForgeOps version" />
+    <a class="meta-badge" :href="repoUrl" target="_blank" rel="noopener noreferrer" aria-label="Open repository version">
+      <img :src="versionBadge" alt="ForgeOps version" width="95" height="20" />
     </a>
-    <a class="lang-pill" :href="zhLink">ZH</a>
-    <a class="lang-pill" :href="enLink">EN</a>
+    <a class="lang-pill" :href="zhLink" aria-label="Switch to Chinese">ZH</a>
+    <a class="lang-pill" :href="enLink" aria-label="Switch to English">EN</a>
   </div>
 </template>
