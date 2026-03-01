@@ -32,7 +32,7 @@ export default defineConfig({
       provider: "local",
     },
     nav: [
-      { text: "Home", link: "/" },
+      { text: "Home", link: "/harness-engineering.html" },
       { text: "中文", link: "/zh/" },
       { text: "English", link: "/en/" },
       { text: "Brand (HTML)", link: "/harness-engineering.html" },

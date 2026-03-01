@@ -736,6 +736,33 @@
         font-size: 0.86rem;
       }
 
+      .screenshots-grid {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+
+      .screenshot {
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(122, 152, 205, 0.3);
+        background: rgba(8, 14, 26, 0.82);
+        overflow: hidden;
+      }
+
+      .screenshot img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .screenshot figcaption {
+        padding: 0.8rem 0.85rem;
+        color: var(--text-dim);
+        font-size: 0.84rem;
+        line-height: 1.5;
+      }
+
       .cta-block {
         border: 1px solid rgba(122, 152, 205, 0.34);
         border-radius: var(--radius-lg);
@@ -819,6 +846,10 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
+        .screenshots-grid {
+          grid-template-columns: 1fr;
+        }
+
         .orbit-node {
           width: 45%;
         }
@@ -878,6 +909,7 @@
           <a href="#pillars">Pillars</a>
           <a href="#workflow">Dual Loop</a>
           <a href="#capabilities">Capabilities</a>
+          <a href="#screenshots">Screenshots</a>
           <a href="#docs">Docs</a>
         </nav>
       </div>
@@ -1153,6 +1185,27 @@
               <b>业务指标</b>
               <span>真实部署规模与量化收益：<strong>待补充</strong>。</span>
             </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="screenshots">
+        <div class="wrap">
+          <span class="section-label reveal">Screenshots</span>
+          <h2 class="reveal">控制台与 Codex 技能使用场景</h2>
+          <div class="screenshots-grid">
+            <figure class="screenshot reveal">
+              <img src="/images/forgeops-console-home.png" alt="ForgeOps 控制台首页截图" loading="lazy" />
+              <figcaption>ForgeOps 控制台首页：项目、运行态与流程入口总览。</figcaption>
+            </figure>
+            <figure class="screenshot reveal">
+              <img src="/images/forgeops-system-settings.png" alt="ForgeOps 控制台系统设置页面截图" loading="lazy" />
+              <figcaption>系统设置页：运行时、凭据与全局配置集中管理。</figcaption>
+            </figure>
+            <figure class="screenshot reveal">
+              <img src="/images/forgeops-codex-skill.png" alt="在 Codex 中使用 ForgeOps 技能的截图" loading="lazy" />
+              <figcaption>在 Codex 会话中直接调用 ForgeOps 技能，快速进入控制面工作流。</figcaption>
+            </figure>
           </div>
         </div>
       </section>

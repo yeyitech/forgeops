@@ -90,6 +90,28 @@
         text-decoration: none;
       }
 
+      a:focus-visible,
+      .btn:focus-visible {
+        outline: 2px solid var(--warm);
+        outline-offset: 2px;
+      }
+
+      .skip-link {
+        position: absolute;
+        left: 0.75rem;
+        top: -40px;
+        z-index: 100;
+        background: #ffffff;
+        color: #0f172a;
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        font-weight: 700;
+      }
+
+      .skip-link:focus {
+        top: 0.75rem;
+      }
+
       .wrap {
         width: var(--wrap);
         margin: 0 auto;
@@ -714,6 +736,33 @@
         font-size: 0.86rem;
       }
 
+      .screenshots-grid {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+
+      .screenshot {
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(122, 152, 205, 0.3);
+        background: rgba(8, 14, 26, 0.82);
+        overflow: hidden;
+      }
+
+      .screenshot img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .screenshot figcaption {
+        padding: 0.8rem 0.85rem;
+        color: var(--text-dim);
+        font-size: 0.84rem;
+        line-height: 1.5;
+      }
+
       .cta-block {
         border: 1px solid rgba(122, 152, 205, 0.34);
         border-radius: var(--radius-lg);
@@ -797,6 +846,10 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
+        .screenshots-grid {
+          grid-template-columns: 1fr;
+        }
+
         .orbit-node {
           width: 45%;
         }
@@ -844,17 +897,19 @@
     </style>
   </head>
   <body>
+    <a class="skip-link" href="#top">Skip to content</a>
     <header class="topbar">
       <div class="wrap topbar-inner">
         <a class="brand" href="#top">
           <span class="brand-dot"></span>
           <span>ForgeOps · Harness Engineering</span>
         </a>
-        <nav class="top-links">
+        <nav class="top-links" aria-label="Section navigation">
           <a href="#why">Why Harness</a>
           <a href="#pillars">Pillars</a>
           <a href="#workflow">Dual Loop</a>
           <a href="#capabilities">Capabilities</a>
+          <a href="#screenshots">Screenshots</a>
           <a href="#docs">Docs</a>
         </nav>
       </div>
@@ -1134,6 +1189,27 @@
         </div>
       </section>
 
+      <section id="screenshots">
+        <div class="wrap">
+          <span class="section-label reveal">Screenshots</span>
+          <h2 class="reveal">控制台与 Codex 技能使用场景</h2>
+          <div class="screenshots-grid">
+            <figure class="screenshot reveal">
+              <img src="/images/forgeops-console-home.png" alt="ForgeOps 控制台首页截图" loading="lazy" />
+              <figcaption>ForgeOps 控制台首页：项目、运行态与流程入口总览。</figcaption>
+            </figure>
+            <figure class="screenshot reveal">
+              <img src="/images/forgeops-system-settings.png" alt="ForgeOps 控制台系统设置页面截图" loading="lazy" />
+              <figcaption>系统设置页：运行时、凭据与全局配置集中管理。</figcaption>
+            </figure>
+            <figure class="screenshot reveal">
+              <img src="/images/forgeops-codex-skill.png" alt="在 Codex 中使用 ForgeOps 技能的截图" loading="lazy" />
+              <figcaption>在 Codex 会话中直接调用 ForgeOps 技能，快速进入控制面工作流。</figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
       <section id="docs">
         <div class="wrap">
           <div class="cta-block reveal">
@@ -1144,14 +1220,14 @@
               如果你要继续扩展为官网版本，建议先补齐“真实运行指标、用户案例、部署链接”三类证据，再做下一轮视觉深化。
             </p>
             <div class="hero-actions" style="margin-top: 1.25rem">
-              <a class="btn btn-primary" href="./README.md">查看 README</a>
-              <a class="btn btn-ghost" href="./docs/00-index.md">打开文档地图</a>
+              <a class="btn btn-primary" href="https://github.com/yeyitech/forgeops/blob/main/README.md">查看 README</a>
+              <a class="btn btn-ghost" href="./00-index">打开文档地图</a>
             </div>
             <div class="cta-links">
-              <a class="doc-link" href="./Harness%20Engineering.md">Harness Engineering.md</a>
-              <a class="doc-link" href="./docs/architecture/00-overview.md">architecture/00-overview.md</a>
-              <a class="doc-link" href="./docs/user-guide.md">docs/user-guide.md</a>
-              <a class="doc-link" href="./docs/harness-engineering-guidelines.md">docs/harness-engineering-guidelines.md</a>
+              <a class="doc-link" href="https://github.com/yeyitech/forgeops/blob/main/Harness%20Engineering.md">Harness Engineering.md</a>
+              <a class="doc-link" href="./architecture/00-overview">architecture/00-overview.md</a>
+              <a class="doc-link" href="./user-guide">docs/user-guide.md</a>
+              <a class="doc-link" href="./harness-engineering-guidelines">docs/harness-engineering-guidelines.md</a>
             </div>
           </div>
         </div>
