@@ -22,6 +22,16 @@ Updated: 2026-03-01
 
 ### 快速入口（User）
 
+- `docs/index.md`
+  - 开源站点首页（VitePress Home），提供对外导览与文档入口。
+- `docs/zh/index.md`
+  - 中文入口页（`/zh/`），用于中文读者快速进入品牌与文档。
+- `docs/en/index.md`
+  - 英文入口页（`/en/`），用于英文读者快速进入品牌与文档。
+- `docs/zh/brand.md`
+  - 中文品牌页（Harness Engineering 叙事版）。
+- `docs/en/brand.md`
+  - 英文品牌页（Harness Engineering narrative）。
 - `docs/user-quickstart.md`
   - 面向用户的 1 页上手卡（最小命令集与模式选择规则）。
 - `docs/user-guide.md`

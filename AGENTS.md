@@ -27,6 +27,16 @@ ForgeOps 是运行时无关的 AI 研发流水线控制平面。
   - 面向用户的 1 页上手卡（最小命令集与模式选择规则）。
 - `docs/project-init-user-guide.md`
   - 面向用户解释 `forgeops project init` 在初始化期间具体执行的动作与结果。
+- `docs/index.md`
+  - 开源站点首页（VitePress Home），用于 GitHub Pages 对外展示与导览。
+- `docs/zh/index.md`
+  - 中文入口页（`/zh/`），用于中文用户的品牌与文档导览。
+- `docs/en/index.md`
+  - 英文入口页（`/en/`），用于英文用户的品牌与文档导览。
+- `docs/zh/brand.md`
+  - 中文品牌页（Harness Engineering 叙事版）。
+- `docs/en/brand.md`
+  - 英文品牌页（Harness Engineering narrative）。
 - `FORGEOPS_META_SKILL.md`
   - 面向 Agent 的 ForgeOps CLI 技能（控制面操作剧本与恢复策略）。
 - `docs/00-index.md`

@@ -1,0 +1,64 @@
+:root {
+  --vp-c-brand-1: #f97316;
+  --vp-c-brand-2: #fb923c;
+  --vp-c-brand-3: #fdba74;
+  --vp-c-brand-soft: rgba(249, 115, 22, 0.16);
+  --vp-c-indigo-1: #14b8a6;
+  --vp-home-hero-name-color: #f97316;
+  --vp-home-hero-image-background-image:
+    radial-gradient(circle at 20% 25%, rgba(20, 184, 166, 0.35), transparent 40%),
+    radial-gradient(circle at 82% 20%, rgba(249, 115, 22, 0.35), transparent 45%),
+    radial-gradient(circle at 50% 80%, rgba(251, 146, 60, 0.24), transparent 45%);
+  --vp-home-hero-image-filter: blur(44px);
+}
+
+.VPHome .name {
+  letter-spacing: 0.01em;
+}
+
+.VPFeature {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.9));
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700;
+}
+
+.forgeops-nav-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+}
+
+.forgeops-nav-meta .meta-badge img {
+  display: block;
+  height: 20px;
+}
+
+.forgeops-nav-meta .lang-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: var(--vp-c-text-1);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 8px;
+  text-decoration: none;
+}
+
+.forgeops-nav-meta .lang-pill:hover {
+  border-color: var(--vp-c-brand-2);
+  color: var(--vp-c-brand-2);
+}
+
+@media (max-width: 1180px) {
+  .forgeops-nav-meta {
+    display: none;
+  }
+}

@@ -2,6 +2,7 @@
   "name": "forgeops",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -15,11 +16,17 @@
     "release:oss": "bash scripts/release-oss.sh",
     "check": "node --check src/cli/index.js && node --check src/core/project-init.js && node --check src/core/store.js && node --check src/core/git.js && node --check src/core/skills.js && node --check src/core/invariants.js && node --check src/core/scheduler-config.js && node --check src/core/system-config.js && node --check src/core/machine-info.js && node --check src/core/service-manager.js && node --check src/core/platform-toolchain.js && node --check src/core/workflow-config.js && node --check src/core/templates/invariants-checker.mjs && node --check src/core/templates/invariants-smoke.mjs && node --check src/server/app.js && node --check src/worker/engine.js && node --check src/worker/scheduler.js && node --check src/runtime/codex-exec-json.js && node --check src/runtime/codex-app-server.js && node --check src/runtime/preflight.js",
     "docs:check": "node scripts/check-doc-freshness.js && node scripts/check-doc-structure.js",
+    "docs:site:dev": "vitepress dev docs --host 127.0.0.1 --port 5174",
+    "docs:site:build": "vitepress build docs",
+    "docs:site:preview": "vitepress preview docs --host 127.0.0.1 --port 4174",
     "frontend:dev": "npm --prefix frontend run dev",
     "frontend:build": "npm --prefix frontend run build"
   },
   "dependencies": {
     "node-cron": "^4.2.1",
     "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
   }
 }
