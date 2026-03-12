@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { URL } from "node:url";
 import { runDoctor } from "../core/doctor.js";
 import { resolveRunAttachContext } from "../core/run-attach.js";
+import { findCodexSessionJsonlForThread, readTailTextFile, resolveManagedCodexHome } from "../core/codex-session-log.js";
 import { buildCodexResumeShellCommand, launchTerminalCommand } from "../core/terminal-launcher.js";
 import { readSystemConfig, updateSystemConfig } from "../core/system-config.js";
 import { initProjectScaffold } from "../core/project-init.js";
@@ -867,6 +868,86 @@ export function createServerApp(params) {
         return;
       }
 
+      const runSessionsMatch = pathname.match(/^\/api\/runs\/([^/]+)\/sessions$/);
+      if (runSessionsMatch && method === "GET") {
+        const runId = decodeURIComponent(runSessionsMatch[1]);
+        const stepKey = String(parsedUrl.searchParams.get("stepKey") ?? "").trim();
+        const status = String(parsedUrl.searchParams.get("status") ?? "").trim();
+        const requireThread = String(parsedUrl.searchParams.get("withThread") ?? "").trim() === "true";
+
+        const run = store.getRun(runId);
+        if (!run) {
+          sendJson(res, 404, { error: "Run not found" });
+          return;
+        }
+
+        const rows = store.listRunSessions(runId, { stepKey, status });
+        const filtered = requireThread
+          ? rows.filter((row) => String(row.thread_id ?? "").trim().length > 0)
+          : rows;
+        sendJson(res, 200, { data: { runId, sessions: filtered } });
+        return;
+      }
+
+      const sessionLogMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/log$/);
+      if (sessionLogMatch && method === "GET") {
+        const sessionId = decodeURIComponent(sessionLogMatch[1]);
+        const maxLines = Number(parsedUrl.searchParams.get("lines") ?? "400") || 400;
+        const maxBytes = Number(parsedUrl.searchParams.get("maxBytes") ?? `${1024 * 1024}`) || (1024 * 1024);
+
+        const details = store.getSessionDetails(sessionId);
+        if (!details) {
+          sendJson(res, 404, { error: "Session not found" });
+          return;
+        }
+
+        const threadId = String(details.thread_id ?? "").trim();
+        if (!threadId) {
+          sendJson(res, 400, { error: "Session has no thread_id yet" });
+          return;
+        }
+
+        const worktreePath = String(details.worktree_path ?? "").trim();
+        if (!worktreePath || !fs.existsSync(worktreePath)) {
+          sendJson(res, 400, { error: "Worktree not found (run may be archived)" });
+          return;
+        }
+
+        const codexHome = resolveManagedCodexHome(worktreePath);
+        const located = findCodexSessionJsonlForThread({ codexHome, threadId });
+        if (!located.ok) {
+          sendJson(res, 404, { error: located.error });
+          return;
+        }
+
+        const tail = readTailTextFile({
+          filePath: located.path,
+          maxLines,
+          maxBytes,
+        });
+        if (!tail.ok) {
+          sendJson(res, 400, { error: tail.error });
+          return;
+        }
+
+        sendJson(res, 200, {
+          data: {
+            sessionId,
+            runId: String(details.run_id ?? ""),
+            stepId: String(details.step_id ?? ""),
+            stepKey: String(details.step_key ?? ""),
+            agentId: String(details.agent_id ?? ""),
+            threadId,
+            worktreePath,
+            codexHome,
+            logPath: located.path,
+            truncated: Boolean(tail.truncated),
+            content: tail.content,
+          },
+        });
+        return;
+      }
+
       const runResumeMatch = pathname.match(/^\/api\/runs\/([^/]+)\/resume$/);
       if (runResumeMatch && method === "POST") {
         const runId = decodeURIComponent(runResumeMatch[1]);
@@ -914,7 +995,21 @@ export function createServerApp(params) {
         try {
           const codexBin = String(process.env.FORGEOPS_CODEX_BIN ?? "codex").trim() || "codex";
           const threadId = String(resolved.selected.threadId ?? "").trim();
-          const shellCommand = buildCodexResumeShellCommand(codexBin, threadId, resolved.attachCwd);
+          const managedCodexHome = path.join(resolved.attachCwd, ".forgeops-runtime", "codex-home");
+          const managedOsHome = path.join(resolved.attachCwd, ".forgeops-runtime", "home");
+          const useManagedEnv = fs.existsSync(managedCodexHome) && fs.statSync(managedCodexHome).isDirectory();
+          const envPrefix = useManagedEnv
+            ? {
+                CODEX_HOME: managedCodexHome,
+                CODEX_SQLITE_HOME: managedCodexHome,
+                HOME: managedOsHome,
+                USERPROFILE: managedOsHome,
+                XDG_CONFIG_HOME: path.join(managedOsHome, ".config"),
+                XDG_CACHE_HOME: path.join(managedOsHome, ".cache"),
+                XDG_DATA_HOME: path.join(managedOsHome, ".local", "share"),
+              }
+            : null;
+          const shellCommand = buildCodexResumeShellCommand(codexBin, threadId, resolved.attachCwd, envPrefix);
           const launch = launchTerminalCommand({
             cwd: resolved.attachCwd,
             command: shellCommand,

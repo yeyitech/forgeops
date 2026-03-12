@@ -1,73 +1,73 @@
 {
-  "version": 1,
+  "version": 2,
   "profiles": {
     "web": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-web-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-web-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-web-copilot", "developer-frontend-web", "developer-backend-web", "developer-fullstack-web"],
-        "tester": ["project-meta-web-copilot", "tester-web-quality-gate"],
-        "reviewer": ["project-meta-web-copilot", "reviewer-web-merge-governance"],
+        "tester": ["project-meta-web-copilot", "tester-web-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-web-copilot", "reviewer-web-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
     "miniapp": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-miniapp-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-miniapp-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-miniapp-copilot", "developer-miniapp-frontend", "developer-miniapp-backend", "developer-miniapp-fullstack"],
-        "tester": ["project-meta-miniapp-copilot", "tester-miniapp-quality-gate"],
-        "reviewer": ["project-meta-miniapp-copilot", "reviewer-miniapp-merge-governance"],
+        "tester": ["project-meta-miniapp-copilot", "tester-miniapp-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-miniapp-copilot", "reviewer-miniapp-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
     "ios": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-ios-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-ios-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-ios-copilot", "developer-ios-app", "developer-ios-backend", "developer-ios-fullstack"],
-        "tester": ["project-meta-ios-copilot", "tester-ios-quality-gate"],
-        "reviewer": ["project-meta-ios-copilot", "reviewer-ios-merge-governance"],
+        "tester": ["project-meta-ios-copilot", "tester-ios-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-ios-copilot", "reviewer-ios-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
     "microservice": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-microservice-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-microservice-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-microservice-copilot", "developer-microservice-python"],
-        "tester": ["project-meta-microservice-copilot", "tester-microservice-quality-gate"],
-        "reviewer": ["project-meta-microservice-copilot", "reviewer-microservice-merge-governance"],
+        "tester": ["project-meta-microservice-copilot", "tester-microservice-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-microservice-copilot", "reviewer-microservice-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
     "android": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-android-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-android-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-android-copilot", "developer-android-app", "developer-android-backend"],
-        "tester": ["project-meta-android-copilot", "tester-android-quality-gate"],
-        "reviewer": ["project-meta-android-copilot", "reviewer-android-merge-governance"],
+        "tester": ["project-meta-android-copilot", "tester-android-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-android-copilot", "reviewer-android-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
     "serverless": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-serverless-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-serverless-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-serverless-copilot", "developer-serverless-backend"],
-        "tester": ["project-meta-serverless-copilot", "tester-serverless-quality-gate"],
-        "reviewer": ["project-meta-serverless-copilot", "reviewer-serverless-merge-governance"],
+        "tester": ["project-meta-serverless-copilot", "tester-serverless-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-serverless-copilot", "reviewer-serverless-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     },
     "other": {
       "roles": {
-        "architect": ["architect-scope-planning", "architect-web-solution"],
-        "issue-manager": ["issue-structured-spec"],
+        "architect": ["architect-scope-planning", "architect-web-solution", "search-first", "iterative-retrieval"],
+        "issue-manager": ["issue-structured-spec", "search-first", "iterative-retrieval"],
         "developer": ["project-meta-other-copilot", "developer-fullstack-web"],
-        "tester": ["project-meta-other-copilot", "tester-web-quality-gate"],
-        "reviewer": ["project-meta-other-copilot", "reviewer-merge-governance"],
+        "tester": ["project-meta-other-copilot", "tester-web-quality-gate", "verification-loop"],
+        "reviewer": ["project-meta-other-copilot", "reviewer-merge-governance", "security-review", "verification-loop"],
         "garbage-collector": ["cleanup-entropy-governor"]
       }
     }

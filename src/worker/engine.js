@@ -4,6 +4,8 @@ import { spawnSync } from "node:child_process";
 import { createGitHubIssue } from "../core/git.js";
 import { STEP_OUTPUT_SCHEMA } from "../core/workflow.js";
 import { nowIso } from "../core/utils.js";
+import { prepareManagedCodexEnvironment } from "../runtime/codex-managed.js";
+import { buildEffectiveAgentSkillsForStep } from "../core/skill-selection.js";
 
 function toPlainError(err) {
   if (err instanceof Error) {
@@ -74,6 +76,29 @@ function parseJsonReport(rawText) {
   } catch {
     return null;
   }
+}
+
+function selectRoleSkillsForStep(raw, stepKey) {
+  const list = Array.isArray(raw) ? raw : [];
+  const step = String(stepKey ?? "").trim();
+  if (!step) return list;
+
+  const scoped = list.filter((item) => {
+    const whenSteps = Array.isArray(item?.whenSteps) ? item.whenSteps : null;
+    if (!whenSteps || whenSteps.length === 0) return true;
+    return whenSteps.map((s) => String(s ?? "").trim()).filter(Boolean).includes(step);
+  });
+
+  scoped.sort((a, b) => {
+    const pa = Number.isFinite(Number(a?.priority)) ? Number(a.priority) : 0;
+    const pb = Number.isFinite(Number(b?.priority)) ? Number(b.priority) : 0;
+    if (pb !== pa) return pb - pa;
+    const na = String(a?.name ?? "");
+    const nb = String(b?.name ?? "");
+    return na.localeCompare(nb);
+  });
+
+  return scoped;
 }
 
 function summarizePlatformGateFailure(result, report) {
@@ -265,6 +290,52 @@ export class ForgeOpsEngine {
       requestedModel: step.requested_model,
     });
 
+    // Prepare a strict, role-scoped Codex environment:
+    // - isolate CODEX_HOME so user-global skills and session state do not bloat context
+    // - isolate OS HOME so `$HOME/.agents/skills` is empty
+    // - materialize ONLY this role's skills under `<worktree>/.agents/skills`
+    const roleSkillsAll = step.context?.agentSkills && typeof step.context.agentSkills === "object"
+      ? step.context.agentSkills[step.agent_id]
+      : null;
+    const roleSkillsBase = selectRoleSkillsForStep(roleSkillsAll, step.step_key);
+    const selection = buildEffectiveAgentSkillsForStep({
+      context: step.context,
+      agentId: step.agent_id,
+      stepKey: step.step_key,
+      projectRootPath: step.root_path,
+      productType: step.context?.project?.productType ?? step.product_type,
+      techProfile: step.context?.projectTechProfile ?? null,
+    });
+    const mergedStepScoped = selection.merged.length > 0
+      ? selectRoleSkillsForStep(selection.merged, step.step_key)
+      : [];
+    const roleSkills = mergedStepScoped.length > 0 ? mergedStepScoped : roleSkillsBase;
+    const managedEnv = await prepareManagedCodexEnvironment({
+      repoRoot: step.root_path,
+      agentId: step.agent_id,
+      skills: roleSkills,
+    });
+    if (selection.additionalSkillNames && selection.additionalSkillNames.length > 0) {
+      this.store.emitEvent(runId, stepId, "runtime.codex.skills.intent_applied", {
+        agentId: step.agent_id,
+        stepKey: step.step_key,
+        intents: selection.intents,
+        additionalSkillNames: selection.additionalSkillNames,
+      });
+    }
+    if (managedEnv.warnings && managedEnv.warnings.length > 0) {
+      this.store.emitEvent(runId, stepId, "runtime.codex.managed_env.warnings", {
+        agentId: step.agent_id,
+        warnings: managedEnv.warnings,
+      });
+    }
+    this.store.emitEvent(runId, stepId, "runtime.codex.managed_env.ready", {
+      agentId: step.agent_id,
+      codexHome: managedEnv.codexHome || null,
+      skillsRoot: managedEnv.skillsRoot || null,
+      installedSkillsCount: Array.isArray(managedEnv.installedSkills) ? managedEnv.installedSkills.length : 0,
+    });
+
     let runtimeResult;
     try {
       runtimeResult = await runtime.runStep({
@@ -274,6 +345,7 @@ export class ForgeOpsEngine {
         outputSchema: STEP_OUTPUT_SCHEMA,
         timeoutMs: 20 * 60 * 1000,
         resumeSession: resumeSession?.threadId ? resumeSession : null,
+        env: managedEnv.env && typeof managedEnv.env === "object" ? managedEnv.env : null,
         onRuntimeEvent: (evt) => {
           this.store.emitEvent(runId, stepId, `runtime.${evt.type}`, evt.payload ?? {});
           if (evt.type === "runtime.process.started") {

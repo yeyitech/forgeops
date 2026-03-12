@@ -23,6 +23,10 @@ features:
     details: Focus on durable delivery quality, not only faster code generation.
   - title: Quick by Default
     details: Use quick mode by default, then escalate to standard when scope or risk grows.
+  - title: Step-Scoped Skills
+    details: Skills are assembled per-step to avoid bloating the context window. A role can have many skills, but only the relevant subset is loaded for the current step.
+  - title: Issue Intent Auto-Append
+    details: Detect intents from issue/task context and auto-append high-signal skills (migrations, API design, E2E, deployment, Supabase/Postgres), instead of relying on a fixed “4 skills per role” cap.
   - title: Harness Engineering
     details: Convert recurring incidents into enforceable engineering mechanisms.
 ---

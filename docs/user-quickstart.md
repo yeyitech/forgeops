@@ -8,6 +8,7 @@ Updated: 2026-03-01
 - 小改动先走 `quick`，大改动走 `standard`。
 - 只想本地改代码：`forgeops codex project --local-only`。
 - 需要可审计交付链路：用 Issue 驱动 run。
+- 技能不再限制“每角色 4 个”：运行时按 Step 精准装配，并可根据 issue 意图自动追加迁移/部署/E2E/Supabase 等技能。
 
 ---
 

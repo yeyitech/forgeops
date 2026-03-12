@@ -5,7 +5,9 @@ dist/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 .forgeops-runtime/
+.agents/
 demo-project/
+_external/
 *.log
 .DS_Store
 .forgeops/worktrees/

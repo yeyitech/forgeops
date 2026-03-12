@@ -27,7 +27,8 @@ import {
   updateGitHubIssueLabels,
   updateGitHubPullRequestLabels,
 } from "./git.js";
-import { loadProjectTechProfile, resolveAgentSkills } from "./skills.js";
+import { DEFAULT_STEP_KEYS_BY_AGENT, loadProjectTechProfile, resolveAgentSkills } from "./skills.js";
+import { buildEffectiveAgentSkillsForStep } from "./skill-selection.js";
 import { newId, nowIso, safeJsonParse, slugify } from "./utils.js";
 
 const DB_DIR = process.env.FORGEOPS_HOME
@@ -2643,19 +2644,103 @@ export class ForgeOpsStore {
           }
         }
         const next = parsed && typeof parsed === "object" ? { ...parsed } : {};
+        next.version = 3;
+        if (!Array.isArray(next.roleLayers)) {
+          next.roleLayers = ["official", "user-global", "project-local"];
+        }
+        if (!next.selection || typeof next.selection !== "object") {
+          next.selection = { mode: "step", includeUnscoped: true };
+        }
+        next.selection.mode = "step";
+        if (typeof next.selection.includeUnscoped !== "boolean") {
+          next.selection.includeUnscoped = true;
+        }
+
         const rolesMap = next.roles && typeof next.roles === "object" ? { ...next.roles } : {};
-        for (const role of roles) {
-          const current = Array.isArray(rolesMap[role])
-            ? rolesMap[role].map((item) => String(item ?? "").trim()).filter(Boolean)
+
+        const normalizeTags = (value) => {
+          const list = Array.isArray(value) ? value : [];
+          const out = [];
+          for (const item of list) {
+            const tag = String(item ?? "").trim();
+            if (!tag) continue;
+            if (out.includes(tag)) continue;
+            out.push(tag);
+          }
+          return out.length > 0 ? out : null;
+        };
+
+        const normalizeWhenSteps = (value) => {
+          const list = Array.isArray(value) ? value : [];
+          const out = [];
+          for (const item of list) {
+            const step = String(item ?? "").trim();
+            if (!step) continue;
+            if (out.includes(step)) continue;
+            out.push(step);
+          }
+          return out.length > 0 ? out : null;
+        };
+
+        const normalizeRoleEntries = (role, rawItems) => {
+          const list = Array.isArray(rawItems) ? rawItems : [];
+          const defaultSteps = Array.isArray(DEFAULT_STEP_KEYS_BY_AGENT?.[role])
+            ? DEFAULT_STEP_KEYS_BY_AGENT[role]
             : [];
-          if (!current.includes(skillName)) {
-            current.push(skillName);
+          const byName = new Map();
+
+          for (const item of list) {
+            if (!item) continue;
+
+            if (typeof item === "string") {
+              const name = String(item).trim();
+              if (!name) continue;
+              if (!byName.has(name)) {
+                byName.set(name, {
+                  name,
+                  whenSteps: defaultSteps.length > 0 ? [...defaultSteps] : null,
+                  priority: 50,
+                  tags: ["legacy"],
+                });
+              }
+              continue;
+            }
+
+            if (typeof item === "object") {
+              const name = String(item?.name ?? item?.skill ?? item?.id ?? "").trim();
+              if (!name) continue;
+              const whenSteps = normalizeWhenSteps(item?.whenSteps ?? item?.when_steps ?? item?.steps)
+                ?? (defaultSteps.length > 0 ? [...defaultSteps] : null);
+              const priorityRaw = Number(item?.priority);
+              const priority = Number.isFinite(priorityRaw) ? priorityRaw : null;
+              const tags = normalizeTags(item?.tags) ?? null;
+              if (!byName.has(name)) {
+                byName.set(name, { name, whenSteps, priority, tags });
+              }
+              continue;
+            }
+          }
+
+          return Array.from(byName.values());
+        };
+
+        for (const role of roles) {
+          const current = normalizeRoleEntries(role, rolesMap[role]);
+          const has = current.some((entry) => String(entry?.name ?? "").trim() === skillName);
+          if (!has) {
+            const defaultSteps = Array.isArray(DEFAULT_STEP_KEYS_BY_AGENT?.[role])
+              ? DEFAULT_STEP_KEYS_BY_AGENT[role]
+              : [];
+            current.push({
+              name: skillName,
+              whenSteps: defaultSteps.length > 0 ? [...defaultSteps] : null,
+              priority: 50,
+              tags: ["promoted"],
+            });
           }
           rolesMap[role] = current;
         }
-        if (!Number.isFinite(Number(next.version))) {
-          next.version = 1;
-        }
+
         next.roles = rolesMap;
         fs.writeFileSync(roleMapPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
         changedFiles.push(".forgeops/agent-skills.json");
@@ -5103,7 +5188,9 @@ export class ForgeOpsStore {
         SKILL_DELIVERY_CODEX_NATIVE,
       ),
       agentSkills: this.loadProjectSkills({
-        rootPath: project.root_path,
+        // Resolve project-local skills from the run worktree so any in-flight
+        // skill evolution in the branch is visible to the running agent.
+        rootPath: executionRoot,
         productType: project.product_type,
       }),
       issue: issue
@@ -5365,6 +5452,58 @@ export class ForgeOpsStore {
       artifacts,
       qualityGates,
     };
+  }
+
+  listRunSessions(runId, options = {}) {
+    const rid = String(runId ?? "").trim();
+    if (!rid) return [];
+    const stepKey = String(options.stepKey ?? "").trim();
+    const status = String(options.status ?? "").trim();
+
+    const rows = this.db
+      .prepare(
+        `SELECT se.*,
+                st.step_key AS step_key,
+                st.agent_id AS agent_id,
+                st.step_index AS step_index
+         FROM sessions se
+         JOIN steps st ON st.id = se.step_id
+         WHERE se.run_id = ?
+         ORDER BY se.started_at ASC`
+      )
+      .all(rid);
+
+    return rows.filter((row) => {
+      if (stepKey && String(row.step_key ?? "").trim() !== stepKey) return false;
+      if (status && String(row.status ?? "").trim() !== status) return false;
+      return true;
+    });
+  }
+
+  getSessionDetails(sessionId) {
+    const sid = String(sessionId ?? "").trim();
+    if (!sid) return null;
+    const row = this.db
+      .prepare(
+        `SELECT se.*,
+                st.step_key AS step_key,
+                st.agent_id AS agent_id,
+                st.step_index AS step_index,
+                r.project_id AS project_id,
+                r.worktree_path AS worktree_path,
+                r.worktree_branch AS worktree_branch,
+                r.status AS run_status,
+                p.root_path AS project_root_path,
+                p.name AS project_name
+         FROM sessions se
+         JOIN steps st ON st.id = se.step_id
+         JOIN runs r ON r.id = se.run_id
+         JOIN projects p ON p.id = r.project_id
+         WHERE se.id = ?
+         LIMIT 1`
+      )
+      .get(sid);
+    return row && typeof row === "object" ? row : null;
   }
 
   claimNextPendingStep() {
@@ -7130,6 +7269,38 @@ export class ForgeOpsStore {
       ...(context && typeof context === "object" ? context : {}),
       projectContext: this.buildStepProjectContext(context, stepKey),
     };
+
+    // Issue intent driven skills:
+    // Keep `context.agentSkills` as the stable, init-defined role mapping,
+    // but for this step's prompt we expose an "effective" role skill list
+    // that includes dynamically selected skills based on issue intent.
+    try {
+      const agentId = String(def.agentId ?? "").trim();
+      if (agentId) {
+        const selection = buildEffectiveAgentSkillsForStep({
+          context: promptContext,
+          agentId,
+          stepKey,
+          projectRootPath: String(promptContext?.project?.rootPath ?? ""),
+          productType: String(promptContext?.project?.productType ?? ""),
+          techProfile: promptContext?.projectTechProfile ?? null,
+        });
+        const cloned = promptContext.agentSkills && typeof promptContext.agentSkills === "object"
+          ? { ...promptContext.agentSkills }
+          : {};
+        cloned[agentId] = selection.merged;
+        promptContext.agentSkills = cloned;
+        promptContext.skillSelection = {
+          mode: "issue-intent+step-scope",
+          stepKey,
+          agentId,
+          intents: selection.intents,
+          additionalSkillNames: selection.additionalSkillNames,
+        };
+      }
+    } catch {
+      // Do not block prompt rendering if selection logic fails.
+    }
     return def.buildPrompt(promptContext, {
       stepKey,
       templateKey: templateKey ?? stepKey,

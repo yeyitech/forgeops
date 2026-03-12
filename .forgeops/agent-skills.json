@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "productType": "web",
   "tech": {
     "language": "typescript",
@@ -9,33 +9,44 @@
   },
   "roles": {
     "architect": [
-      "architect-scope-planning",
-      "architect-web-solution"
+      { "name": "architect-scope-planning", "whenSteps": ["architect"], "priority": 50, "tags": ["official"] },
+      { "name": "architect-web-solution", "whenSteps": ["architect"], "priority": 50, "tags": ["official"] },
+      { "name": "search-first", "whenSteps": ["architect"], "priority": 40, "tags": ["official"] },
+      { "name": "iterative-retrieval", "whenSteps": ["architect"], "priority": 40, "tags": ["official"] }
     ],
     "issue-manager": [
-      "issue-structured-spec"
+      { "name": "issue-structured-spec", "whenSteps": ["issue"], "priority": 50, "tags": ["official"] },
+      { "name": "search-first", "whenSteps": ["issue"], "priority": 40, "tags": ["official"] },
+      { "name": "iterative-retrieval", "whenSteps": ["issue"], "priority": 40, "tags": ["official"] }
     ],
     "developer": [
-      "project-meta-web-copilot",
-      "developer-frontend-web",
-      "developer-backend-web",
-      "developer-fullstack-web"
+      { "name": "project-meta-web-copilot", "whenSteps": ["implement"], "priority": 60, "tags": ["official", "core"] },
+      { "name": "developer-frontend-web", "whenSteps": ["implement"], "priority": 50, "tags": ["official"] },
+      { "name": "developer-backend-web", "whenSteps": ["implement"], "priority": 50, "tags": ["official"] },
+      { "name": "developer-fullstack-web", "whenSteps": ["implement"], "priority": 50, "tags": ["official"] }
     ],
     "tester": [
-      "project-meta-web-copilot",
-      "tester-web-quality-gate"
+      { "name": "project-meta-web-copilot", "whenSteps": ["test"], "priority": 60, "tags": ["official", "core"] },
+      { "name": "tester-web-quality-gate", "whenSteps": ["test"], "priority": 50, "tags": ["official"] },
+      { "name": "verification-loop", "whenSteps": ["test"], "priority": 40, "tags": ["official"] }
     ],
     "reviewer": [
-      "project-meta-web-copilot",
-      "reviewer-web-merge-governance"
+      { "name": "project-meta-web-copilot", "whenSteps": ["review"], "priority": 60, "tags": ["official", "core"] },
+      { "name": "reviewer-web-merge-governance", "whenSteps": ["review"], "priority": 50, "tags": ["official"] },
+      { "name": "security-review", "whenSteps": ["review"], "priority": 45, "tags": ["official"] },
+      { "name": "verification-loop", "whenSteps": ["review"], "priority": 40, "tags": ["official"] }
     ],
     "garbage-collector": [
-      "cleanup-entropy-governor"
+      { "name": "cleanup-entropy-governor", "whenSteps": ["cleanup"], "priority": 50, "tags": ["official"] }
     ]
   },
   "roleLayers": [
     "official",
     "user-global",
     "project-local"
+  ],
+  "selection": {
+    "mode": "step",
+    "includeUnscoped": true
   ]
 }

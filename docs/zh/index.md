@@ -23,6 +23,10 @@ features:
     details: 不止提升 AI 写码速度，更关注稳定性、可追踪性和复发率下降。
   - title: Quick / Standard
     details: 默认 quick，小改动低成本推进；风险扩大再升级 standard。
+  - title: Step-Scoped Skills
+    details: 技能按 Step 精准装配，避免“一次性塞满上下文”；同一角色可拥有更多技能但运行时只加载当前 Step 需要的部分。
+  - title: Issue Intent Auto-Append
+    details: 基于 issue/task 意图自动追加迁移、API 设计、E2E、部署与 Supabase/Postgres 等技能，不再依赖固定的“每角色 4 个”上限。
   - title: Harness Engineering
     details: 用可执行机制沉淀经验，而不是只靠一次性人工修复。
 ---

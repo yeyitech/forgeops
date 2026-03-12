@@ -154,6 +154,7 @@ forgeops issue list <projectId>
 forgeops issue create <projectId> "需求标题" --mode quick
 forgeops run list --project <projectId>
 forgeops run show <runId>
+forgeops run sessions <runId>
 forgeops run stop <runId>
 forgeops run resume <runId>
 forgeops run attach <runId>
@@ -201,6 +202,48 @@ forgeops codex project --local-only
 ### Q3：我只想让助手本地改，不要动流水线。
 
 - 用 `forgeops codex project --local-only`。
+
+### Q4：我装了很多全局 skills，担心 run 里上下文被挤爆，或者不同角色的 skills 混进来。
+
+ForgeOps 在运行流水线 step 时，会默认以“托管模式”启动 Codex，目标是让 **每个 step 的 agent 只看见本角色的 skills**，并且减少用户全局 skills 对上下文窗口的挤占：
+
+- ForgeOps 会在 run worktree 下创建 role-scoped skills 根目录：`<worktree>/.agents/skills/`
+  - 里面只会放当前 step 的 `agent_id` 对应的 skills（以符号链接方式挂载）。
+- ForgeOps 会默认隔离 Codex 状态目录（`CODEX_HOME`/SQLite）到 worktree：
+  - `<worktree>/.forgeops-runtime/codex-home/`
+- ForgeOps 会默认隔离 OS Home（避免扫描到你真实 home 下的 `~/.agents/skills`）：
+  - `<worktree>/.forgeops-runtime/home/`
+- `forgeops run attach <runId>` 会自动探测上述托管目录并带上相同环境变量，否则可能 resume 不到 thread。
+- 你也可以先用 `forgeops run sessions <runId> --with-thread` 找到可 resume 的 session/thread，再用 `forgeops run attach <runId> --session <sessionId>` 精确旁观。
+
+导出某个 step 的 Codex session 日志（JSONL）用于审计/复盘：
+
+```bash
+forgeops run session export <sessionId>
+
+# 只导出最后 200 行，便于快速排障
+forgeops run session export <sessionId> --lines 200
+```
+
+另外，ForgeOps 会在 Issue step 完成后，根据 Issue 意图（task/title/description）为后续 step 自动追加少量高信号技能（step-scoped），减少“初始化时猜不准”的问题：
+
+- 数据库/迁移相关：自动追加 `database-migrations`
+- API 契约相关：自动追加 `api-design`
+- E2E/Playwright/Cypress：自动追加 `e2e-testing`
+- 部署/CI/CD/Docker/K8S：自动追加 `deployment-patterns` / `docker-patterns`
+- Supabase/Postgres/RLS：自动追加 `supabase-postgres-best-practices`
+
+如需临时关闭隔离（不推荐，除非你明确知道为什么）：
+
+```bash
+# 不隔离 CODEX_HOME（可能会把你本机的全局 skills 列表带进 prompt 的 Skills section）
+export FORGEOPS_CODEX_ISOLATE_HOME=false
+
+# 不隔离 HOME（可能会扫描到 ~/.agents/skills）
+export FORGEOPS_CODEX_ISOLATE_OS_HOME=false
+```
+
+ForgeOps 不会在 step prompt 里强制把所有 skills 的 `SKILL.md` 正文一次性注入上下文，而是把该角色可用 skills 列表（含路径）放在 prompt 里，运行时按需打开对应 `SKILL.md` 即可。
 
 ---
 

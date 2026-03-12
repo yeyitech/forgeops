@@ -82,6 +82,14 @@ export class CodexExecJsonRuntime {
     const sandboxMode = params.sandboxMode ?? this.defaultSandbox;
     const approvalPolicy = params.approvalPolicy ?? this.defaultApprovalPolicy;
     const resumeSession = normalizeResumeSession(params.resumeSession);
+    const envOverrides = params?.env && typeof params.env === "object" ? params.env : null;
+    const env = envOverrides
+      ? Object.fromEntries(
+          Object.entries({ ...process.env, ...envOverrides })
+            .filter(([key]) => Boolean(key))
+            .map(([key, value]) => [key, String(value ?? "")])
+        )
+      : process.env;
 
     const notify = (type, payload) => {
       if (typeof params.onRuntimeEvent === "function") {
@@ -147,7 +155,7 @@ export class CodexExecJsonRuntime {
 
       const child = spawn(this.codexBin, args, {
         cwd: params.cwd,
-        env: process.env,
+        env,
         stdio: ["pipe", "pipe", "pipe"],
       });
 

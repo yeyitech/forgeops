@@ -16,10 +16,18 @@ export class CodexAppServerRuntime {
   }
 
   async runStep(params) {
+    const envOverrides = params?.env && typeof params.env === "object" ? params.env : null;
+    const env = envOverrides
+      ? Object.fromEntries(
+          Object.entries({ ...process.env, ...envOverrides })
+            .filter(([key]) => Boolean(key))
+            .map(([key, value]) => [key, String(value ?? "")])
+        )
+      : process.env;
     const child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: params.cwd,
-      env: process.env,
+      env,
     });
 
     const stderr = [];

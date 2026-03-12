@@ -11,6 +11,7 @@ import { ensureGlobalGitHubDeveloperAccess } from "../core/git.js";
 import { normalizeProductType } from "../core/product-type.js";
 import { initProjectScaffold } from "../core/project-init.js";
 import { resolveRunAttachContext } from "../core/run-attach.js";
+import { findCodexSessionJsonlForThread, readTailTextFile, resolveManagedCodexHome } from "../core/codex-session-log.js";
 import {
   getForgeOpsServiceInfo,
   installForgeOpsService,
@@ -725,6 +726,114 @@ async function commandRun(store, args) {
     return;
   }
 
+  if (action === "sessions") {
+    const runId = args[1];
+    if (!runId) {
+      fail("Usage: forgeops run sessions <runId> [--step STEP_KEY] [--status running|completed|failed] [--with-thread]");
+    }
+
+    const stepKey = String(getFlag(args, "--step", "") ?? "").trim();
+    const status = String(getFlag(args, "--status", "") ?? "").trim();
+    const requireThread = args.includes("--with-thread");
+
+    const run = store.getRun(runId);
+    if (!run) fail(`Run not found: ${runId}`);
+
+    const rows = store.listRunSessions(runId, { stepKey, status });
+    const filtered = requireThread
+      ? rows.filter((row) => String(row.thread_id ?? "").trim().length > 0)
+      : rows;
+
+    process.stdout.write(`Run: ${runId} [${run.status}] ${run.task}\n`);
+    if (stepKey) process.stdout.write(`- step: ${stepKey}\n`);
+    if (status) process.stdout.write(`- status: ${status}\n`);
+    process.stdout.write(`Sessions: ${filtered.length}\n`);
+
+    for (const row of filtered) {
+      const thread = String(row.thread_id ?? "").trim() || "-";
+      const turn = String(row.turn_id ?? "").trim() || "-";
+      const stepLabel = `${row.step_key ?? row.step_id} (${row.agent_id ?? "-"})`;
+      process.stdout.write(`- ${row.id} [${row.status}] ${stepLabel}\n`);
+      process.stdout.write(`  thread=${thread} turn=${turn} pid=${row.process_pid ?? "-"}\n`);
+      process.stdout.write(`  started=${row.started_at ?? "-"} ended=${row.ended_at ?? "-"}\n`);
+      const tokenTotal = Number(row.token_input ?? 0)
+        + Number(row.token_cached_input ?? 0)
+        + Number(row.token_output ?? 0);
+      process.stdout.write(`  tokens=${tokenTotal} (in=${row.token_input ?? 0} cached=${row.token_cached_input ?? 0} out=${row.token_output ?? 0})\n`);
+      if (row.error) {
+        process.stdout.write(`  error=${row.error}\n`);
+      }
+    }
+    return;
+  }
+
+  if (action === "session") {
+    const sub = String(args[1] ?? "").trim().toLowerCase();
+    if (sub !== "export") {
+      fail("Usage: forgeops run session export <sessionId> [--out PATH] [--lines N] [--max-bytes N]");
+    }
+    const sessionId = String(args[2] ?? "").trim();
+    if (!sessionId) {
+      fail("Usage: forgeops run session export <sessionId> [--out PATH] [--lines N] [--max-bytes N]");
+    }
+
+    const details = store.getSessionDetails(sessionId);
+    if (!details) {
+      fail(`Session not found: ${sessionId}`);
+    }
+    const threadId = String(details.thread_id ?? "").trim();
+    if (!threadId) {
+      fail(`Session has no thread_id yet: ${sessionId}`);
+    }
+
+    const worktreePath = String(details.worktree_path ?? "").trim();
+    if (!worktreePath) {
+      fail(`Session has no worktree_path (run may be legacy?): ${sessionId}`);
+    }
+    if (!fs.existsSync(worktreePath) || !fs.statSync(worktreePath).isDirectory()) {
+      fail(`Worktree not found (run may be archived): ${worktreePath}`);
+    }
+
+    const codexHome = resolveManagedCodexHome(worktreePath);
+    const located = findCodexSessionJsonlForThread({ codexHome, threadId });
+    if (!located.ok) {
+      fail(`Unable to locate Codex session log: ${located.error}`);
+    }
+
+    const outFlag = String(getFlag(args, "--out", "") ?? "").trim();
+    const outPath = path.resolve(outFlag || path.join(process.cwd(), `forgeops-session-${sessionId}.jsonl`));
+
+    const maxLines = Number(getFlag(args, "--lines", "0") ?? "0") || 0;
+    const maxBytes = Number(getFlag(args, "--max-bytes", "0") ?? "0") || 0;
+
+    if (maxLines > 0 || maxBytes > 0) {
+      const tail = readTailTextFile({
+        filePath: located.path,
+        maxLines: maxLines > 0 ? maxLines : undefined,
+        maxBytes: maxBytes > 0 ? maxBytes : undefined,
+      });
+      if (!tail.ok) {
+        fail(`Failed to read tail: ${tail.error}`);
+      }
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, tail.content, "utf8");
+      process.stdout.write(`Exported (tail) session log: ${outPath}\n`);
+    } else {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.copyFileSync(located.path, outPath);
+      process.stdout.write(`Exported session log: ${outPath}\n`);
+    }
+
+    process.stdout.write(`- session: ${sessionId}\n`);
+    process.stdout.write(`- thread: ${threadId}\n`);
+    process.stdout.write(`- run: ${details.run_id}\n`);
+    process.stdout.write(`- step: ${details.step_key} (${details.agent_id})\n`);
+    process.stdout.write(`- worktree: ${worktreePath}\n`);
+    process.stdout.write(`- codexHome: ${codexHome}\n`);
+    process.stdout.write(`- source: ${located.path}\n`);
+    return;
+  }
+
   if (action === "resume") {
     const runId = args[1];
     if (!runId) fail("Usage: forgeops run resume <runId>");
@@ -790,6 +899,21 @@ async function commandRun(store, args) {
     const selected = resolved.selected;
     const attachCwd = resolved.attachCwd;
     const codexBin = String(process.env.FORGEOPS_CODEX_BIN ?? "codex").trim() || "codex";
+    const managedCodexHome = path.join(attachCwd, ".forgeops-runtime", "codex-home");
+    const managedOsHome = path.join(attachCwd, ".forgeops-runtime", "home");
+    const useManagedEnv = fs.existsSync(managedCodexHome) && fs.statSync(managedCodexHome).isDirectory();
+    const resumeEnv = useManagedEnv
+      ? {
+          ...process.env,
+          CODEX_HOME: managedCodexHome,
+          CODEX_SQLITE_HOME: managedCodexHome,
+          HOME: managedOsHome,
+          USERPROFILE: managedOsHome,
+          XDG_CONFIG_HOME: path.join(managedOsHome, ".config"),
+          XDG_CACHE_HOME: path.join(managedOsHome, ".cache"),
+          XDG_DATA_HOME: path.join(managedOsHome, ".local", "share"),
+        }
+      : process.env;
 
     process.stdout.write(`Attaching to run: ${runId}\n`);
     process.stdout.write(`- thread: ${selected.threadId}\n`);
@@ -802,12 +926,16 @@ async function commandRun(store, args) {
     if (details.run.status === "running") {
       process.stdout.write("Notice: run is still running. Observe only; avoid sending new prompts in this thread.\n");
     }
+    if (useManagedEnv) {
+      process.stdout.write(`- managed CODEX_HOME: ${managedCodexHome}\n`);
+      process.stdout.write(`- managed HOME: ${managedOsHome}\n`);
+    }
     process.stdout.write(`Launching: ${codexBin} resume --all --cd ${attachCwd} ${selected.threadId}\n`);
 
     const launch = spawnSync(codexBin, ["resume", "--all", "--cd", attachCwd, selected.threadId], {
       stdio: "inherit",
       cwd: attachCwd,
-      env: process.env,
+      env: resumeEnv,
     });
 
     if (launch.error) {
@@ -820,7 +948,7 @@ async function commandRun(store, args) {
     return;
   }
 
-  fail("Unknown run command. Try: forgeops run create|list|show|stop|resume|stop-all|resume-all|attach");
+  fail("Unknown run command. Try: forgeops run create|list|show|sessions|session|stop|resume|stop-all|resume-all|attach");
 }
 
 async function commandScheduler(store, args) {

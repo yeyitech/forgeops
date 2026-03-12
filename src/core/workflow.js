@@ -42,7 +42,6 @@ const DEFAULT_REVIEW_AUTO_FIX_POLICY = Object.freeze({
 });
 const SKILL_DELIVERY_LEGACY = "legacy";
 const SKILL_DELIVERY_CODEX_NATIVE = "codex-native";
-const MAX_SKILL_MENTIONS_PER_AGENT = 4;
 
 function parseBooleanLike(value, fallback) {
   if (typeof value === "boolean") return value;
@@ -266,7 +265,15 @@ function resolveSkillMentionPath(item) {
   return relPath;
 }
 
-function renderAgentSkillsSection(ctx, agentId) {
+function matchesStepScope(item, stepKey) {
+  const step = String(stepKey ?? "").trim();
+  if (!step) return true;
+  const whenSteps = Array.isArray(item?.whenSteps) ? item.whenSteps : null;
+  if (!whenSteps || whenSteps.length === 0) return true;
+  return whenSteps.map((s) => String(s ?? "").trim()).filter(Boolean).includes(step);
+}
+
+function renderAgentSkillsSection(ctx, agentId, stepKey = "") {
   const raw = ctx.agentSkills && typeof ctx.agentSkills === "object"
     ? ctx.agentSkills[agentId]
     : null;
@@ -288,28 +295,30 @@ function renderAgentSkillsSection(ctx, agentId) {
     return `Assigned skills:\n${lines.join("\n")}\n\nSkill loading policy:\n- Load only the needed SKILL.md files listed above.\n- Keep context usage minimal and task-relevant.\n`;
   }
 
-  const selected = items.slice(0, MAX_SKILL_MENTIONS_PER_AGENT);
-  const lines = selected.map((item) => {
+  // codex-native mode:
+  // - Do NOT auto-inject SKILL.md bodies by forcing `$skill` mentions.
+  // - List all role skills deterministically with their SKILL.md path so the agent can open
+  //   only what it needs for the current subtask.
+  const scopedItems = items.filter((item) => matchesStepScope(item, stepKey));
+  const hidden = Math.max(0, items.length - scopedItems.length);
+  const lines = scopedItems.map((item) => {
     const name = String(item?.name ?? "").trim() || "unknown-skill";
     const description = String(item?.description ?? "").trim();
     const source = String(item?.source ?? "").trim();
     const mentionPath = resolveSkillMentionPath(item);
-    const mention = mentionPath
-      ? `[$${name}](${mentionPath})`
-      : `$${name}`;
     const sourceText = source ? ` {source=${source}}` : "";
-    return `- ${mention}${description ? `: ${description}` : ""}${sourceText}`;
+    const pathText = mentionPath ? ` (${mentionPath})` : "";
+    return `- ${name}${description ? `: ${description}` : ""}${sourceText}${pathText}`;
   });
-  const hidden = Math.max(0, items.length - selected.length);
 
   return [
-    "Assigned skills (codex-native):",
+    "Assigned skills (codex-native, role-scoped):",
     ...lines,
-    hidden > 0 ? `- ... ${hidden} more skills omitted by prompt budget` : "",
+    hidden > 0 ? `- ... ${hidden} skills omitted (scoped to step=${String(stepKey || "-")})` : "",
     "",
     "Skill loading policy:",
-    "- Prefer Codex native loading from explicit skill mentions above.",
-    "- Load only the skills required for the current subtask; do not bulk-load all skills.",
+    "- Do not bulk-load all skills into context.",
+    "- When a subtask needs a skill, open the corresponding SKILL.md path above and follow only the relevant parts.",
   ].filter(Boolean).join("\n") + "\n";
 }
 
@@ -441,7 +450,7 @@ ${renderGitHubFlowSection(ctx)}
 ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
-${renderAgentSkillsSection(ctx, "architect")}
+${renderAgentSkillsSection(ctx, "architect", "architect")}
 
 Goals:
 1. Clarify scope and non-goals.
@@ -473,7 +482,7 @@ ${renderGitHubFlowSection(ctx)}
 ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
-${renderAgentSkillsSection(ctx, "issue-manager")}
+${renderAgentSkillsSection(ctx, "issue-manager", "issue")}
 ${renderSkillAuthoringSection(ctx)}
 
 Previous outputs:
@@ -516,7 +525,7 @@ ${renderGitHubFlowSection(ctx)}
 ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
-${renderAgentSkillsSection(ctx, "developer")}
+${renderAgentSkillsSection(ctx, "developer", "implement")}
 ${renderSkillAuthoringSection(ctx)}
 Issue context:
 ${JSON.stringify(ctx.stepOutputs.issue ?? {}, null, 2)}
@@ -547,7 +556,7 @@ ${renderGitHubFlowSection(ctx)}
 ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
-${renderAgentSkillsSection(ctx, "tester")}
+${renderAgentSkillsSection(ctx, "tester", "test")}
 Developer outputs:
 ${JSON.stringify(ctx.stepOutputs.implement ?? {}, null, 2)}
 
@@ -601,7 +610,7 @@ ${renderGitHubFlowSection(ctx)}
 ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
-${renderAgentSkillsSection(ctx, "reviewer")}
+${renderAgentSkillsSection(ctx, "reviewer", "review")}
 ${renderReviewAutoFixSection(promptMeta)}
 Pipeline outputs:
 ${JSON.stringify(ctx.stepOutputs, null, 2)}
@@ -637,7 +646,7 @@ ${renderTechProfileSection(ctx)}
 ${renderGovernanceSection(ctx)}
 ${renderInvariantSection(ctx)}
 ${renderCleanupTelemetrySection(ctx)}
-${renderAgentSkillsSection(ctx, "garbage-collector")}
+${renderAgentSkillsSection(ctx, "garbage-collector", "cleanup")}
 ${renderSkillAuthoringSection(ctx)}
 Pipeline outputs:
 ${JSON.stringify(ctx.stepOutputs, null, 2)}

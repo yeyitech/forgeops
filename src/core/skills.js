@@ -13,6 +13,15 @@ const AGENT_IDS = [
   "garbage-collector",
 ];
 
+export const DEFAULT_STEP_KEYS_BY_AGENT = Object.freeze({
+  architect: ["architect"],
+  "issue-manager": ["issue"],
+  developer: ["implement"],
+  tester: ["test"],
+  reviewer: ["review"],
+  "garbage-collector": ["cleanup"],
+});
+
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(MODULE_DIR, "../..");
 const OFFICIAL_SKILLS_ROOT = path.join(REPO_ROOT, "official-skills");
@@ -86,17 +95,51 @@ function parseFrontmatter(text) {
   };
 }
 
+function normalizeStringList(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item ?? "").trim()).filter(Boolean);
+  }
+  const single = String(raw ?? "").trim();
+  return single ? [single] : [];
+}
+
+function parseRoleEntry(raw) {
+  if (typeof raw === "string") {
+    const name = raw.trim();
+    return name ? { name, whenSteps: null, priority: null, tags: null } : null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+
+  const name = String(raw.name ?? raw.skill ?? raw.id ?? "").trim();
+  if (!name) return null;
+
+  const whenSteps = normalizeStringList(raw.whenSteps ?? raw.when_steps ?? raw.steps ?? raw.onlyForSteps);
+  const priorityRaw = raw.priority ?? raw.rank ?? raw.weight ?? null;
+  const priorityNum = Number(priorityRaw);
+  const priority = Number.isFinite(priorityNum) ? Math.floor(priorityNum) : null;
+  const tags = normalizeStringList(raw.tags ?? raw.labels ?? null);
+
+  return {
+    name,
+    whenSteps: whenSteps.length > 0 ? whenSteps : null,
+    priority,
+    tags: tags.length > 0 ? tags : null,
+  };
+}
+
 function parseRoleMap(rawRoles) {
   const roles = rawRoles && typeof rawRoles === "object" ? rawRoles : {};
   const out = {};
   for (const agentId of AGENT_IDS) {
     const raw = Array.isArray(roles[agentId]) ? roles[agentId] : [];
     const list = [];
+    const seen = new Set();
     for (const item of raw) {
-      const name = String(item ?? "").trim();
-      if (!name) continue;
-      if (list.includes(name)) continue;
-      list.push(name);
+      const entry = parseRoleEntry(item);
+      if (!entry) continue;
+      if (seen.has(entry.name)) continue;
+      seen.add(entry.name);
+      list.push(entry);
     }
     if (list.length > 0) {
       out[agentId] = list;
@@ -109,13 +152,41 @@ function mergeRoleMaps(...maps) {
   const out = {};
   for (const agentId of AGENT_IDS) {
     const list = [];
+    const byName = new Map();
     for (const roleMap of maps) {
-      const names = Array.isArray(roleMap?.[agentId]) ? roleMap[agentId] : [];
-      for (const name of names) {
-        const normalized = String(name ?? "").trim();
-        if (!normalized) continue;
-        if (list.includes(normalized)) continue;
-        list.push(normalized);
+      const entries = Array.isArray(roleMap?.[agentId]) ? roleMap[agentId] : [];
+      for (const item of entries) {
+        const entry = parseRoleEntry(item);
+        if (!entry) continue;
+
+        const existing = byName.get(entry.name) ?? null;
+        if (!existing) {
+          byName.set(entry.name, entry);
+          list.push(entry);
+          continue;
+        }
+
+        // Merge attributes conservatively: union steps/tags, keep max priority.
+        const mergedWhenSteps = [
+          ...(Array.isArray(existing.whenSteps) ? existing.whenSteps : []),
+          ...(Array.isArray(entry.whenSteps) ? entry.whenSteps : []),
+        ].map((s) => String(s ?? "").trim()).filter(Boolean);
+        const mergedTags = [
+          ...(Array.isArray(existing.tags) ? existing.tags : []),
+          ...(Array.isArray(entry.tags) ? entry.tags : []),
+        ].map((s) => String(s ?? "").trim()).filter(Boolean);
+        const mergedPriority = Math.max(
+          Number.isFinite(Number(existing.priority)) ? Number(existing.priority) : -Infinity,
+          Number.isFinite(Number(entry.priority)) ? Number(entry.priority) : -Infinity,
+        );
+
+        existing.whenSteps = mergedWhenSteps.length > 0
+          ? Array.from(new Set(mergedWhenSteps))
+          : null;
+        existing.tags = mergedTags.length > 0
+          ? Array.from(new Set(mergedTags))
+          : null;
+        existing.priority = mergedPriority === -Infinity ? null : mergedPriority;
       }
     }
     if (list.length > 0) {
@@ -207,6 +278,7 @@ function loadProjectRoleConfig(rootPath) {
     tech,
     productType: String(parsed?.productType ?? "").trim(),
     mapPath,
+    version: Number(parsed?.version ?? 0) || 0,
     exists: true,
   };
 }
@@ -356,15 +428,44 @@ function resolveSkillDescriptorByPriority(params) {
   return null;
 }
 
+export function resolveSkillDescriptor(params) {
+  const skillName = String(params?.skillName ?? "").trim();
+  if (!skillName) return null;
+
+  const projectRootPath = path.resolve(String(params?.projectRootPath ?? ""));
+  if (!projectRootPath) return null;
+
+  const runtimeHome = resolveRuntimeHome(params?.runtimeHome);
+  const productType = String(params?.productType ?? "web").trim() || "web";
+  const tech = normalizeTechProfile({
+    productType,
+    language: params?.techProfile?.language,
+    frontendStack: params?.techProfile?.frontendStack,
+    backendStack: params?.techProfile?.backendStack,
+    ciProvider: params?.techProfile?.ciProvider,
+  });
+  const templateVars = buildTemplateVars({
+    productType,
+    tech,
+  });
+
+  return resolveSkillDescriptorByPriority({
+    skillName,
+    projectRootPath,
+    runtimeHome,
+    templateVars,
+  });
+}
+
 function collectRoleSkillNames(roleMap) {
   const out = [];
   for (const agentId of AGENT_IDS) {
-    const list = Array.isArray(roleMap?.[agentId]) ? roleMap[agentId] : [];
-    for (const name of list) {
-      const normalized = String(name ?? "").trim();
-      if (!normalized) continue;
-      if (out.includes(normalized)) continue;
-      out.push(normalized);
+    const entries = Array.isArray(roleMap?.[agentId]) ? roleMap[agentId] : [];
+    for (const item of entries) {
+      const entry = parseRoleEntry(item);
+      if (!entry) continue;
+      if (out.includes(entry.name)) continue;
+      out.push(entry.name);
     }
   }
   return out;
@@ -441,19 +542,34 @@ export function scaffoldProjectSkills(meta) {
   const writes = [];
 
   const mapPath = path.join(rootPath, ".forgeops", "agent-skills.json");
+  const roleMapV3 = {};
+  for (const agentId of AGENT_IDS) {
+    const entries = Array.isArray(roleMap?.[agentId]) ? roleMap[agentId] : [];
+    const defaultSteps = DEFAULT_STEP_KEYS_BY_AGENT[agentId] ?? [];
+    roleMapV3[agentId] = entries.map((entry) => ({
+      name: String(entry?.name ?? entry ?? "").trim(),
+      whenSteps: defaultSteps,
+      priority: 50,
+      tags: ["init", "official"],
+    }));
+  }
   const mapContent = `${JSON.stringify({
-    version: 2,
+    version: 3,
     productType,
     tech,
-    roles: roleMap,
+    roles: roleMapV3,
     roleLayers: ["official", "user-global", "project-local"],
+    selection: {
+      mode: "step",
+      includeUnscoped: true,
+    },
   }, null, 2)}\n`;
   writes.push({
     path: ".forgeops/agent-skills.json",
     created: writeIfMissing(mapPath, mapContent),
   });
 
-  const allSkillNames = collectRoleSkillNames(roleMap);
+  const allSkillNames = collectRoleSkillNames(roleMapV3);
   for (const skillName of allSkillNames) {
     const officialSkillPath = path.join(OFFICIAL_SKILLS_ROOT, "skills", skillName, "SKILL.md");
     if (!fs.existsSync(officialSkillPath)) {
@@ -469,7 +585,7 @@ export function scaffoldProjectSkills(meta) {
 
   return {
     writes,
-    roleMap,
+    roleMap: roleMapV3,
     tech,
     officialProfile: official.profileKey,
   };
@@ -481,9 +597,11 @@ export function loadProjectAgentSkills(rootPath) {
   const out = {};
 
   for (const agentId of AGENT_IDS) {
-    const names = Array.isArray(cfg.roles?.[agentId]) ? cfg.roles[agentId] : [];
+    const entries = Array.isArray(cfg.roles?.[agentId]) ? cfg.roles[agentId] : [];
     const items = [];
-    for (const name of names) {
+    for (const entry of entries) {
+      const name = String(entry?.name ?? "").trim();
+      if (!name) continue;
       const skillPath = path.join(projectRoot, ".forgeops", "skills", name, "SKILL.md");
       if (!fs.existsSync(skillPath)) continue;
       const meta = parseFrontmatter(fs.readFileSync(skillPath, "utf8"));
@@ -492,6 +610,9 @@ export function loadProjectAgentSkills(rootPath) {
         description: String(meta.description ?? "").trim(),
         source: "project-local",
         path: path.relative(projectRoot, skillPath),
+        whenSteps: Array.isArray(entry?.whenSteps) ? entry.whenSteps : null,
+        priority: Number.isFinite(Number(entry?.priority)) ? Number(entry.priority) : null,
+        tags: Array.isArray(entry?.tags) ? entry.tags : null,
       });
     }
     if (items.length > 0) {
@@ -536,9 +657,11 @@ export function resolveAgentSkills(params) {
 
   const out = {};
   for (const agentId of AGENT_IDS) {
-    const names = Array.isArray(effectiveRoleMap?.[agentId]) ? effectiveRoleMap[agentId] : [];
+    const entries = Array.isArray(effectiveRoleMap?.[agentId]) ? effectiveRoleMap[agentId] : [];
     const items = [];
-    for (const name of names) {
+    for (const entry of entries) {
+      const name = String(entry?.name ?? "").trim();
+      if (!name) continue;
       const resolved = resolveSkillDescriptorByPriority({
         skillName: name,
         projectRootPath,
@@ -546,7 +669,12 @@ export function resolveAgentSkills(params) {
         templateVars,
       });
       if (!resolved) continue;
-      items.push(resolved);
+      items.push({
+        ...resolved,
+        whenSteps: Array.isArray(entry?.whenSteps) ? entry.whenSteps : null,
+        priority: Number.isFinite(Number(entry?.priority)) ? Number(entry.priority) : null,
+        tags: Array.isArray(entry?.tags) ? entry.tags : null,
+      });
     }
     if (items.length > 0) {
       out[agentId] = items;

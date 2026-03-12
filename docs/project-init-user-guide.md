@@ -69,6 +69,18 @@ forgeops project init --name demo --type web --path /absolute/path/to/demo
 - 从仓内官方模板渲染并落地 `.forgeops/skills/<skill-name>/SKILL.md`。
 - 技能层优先级为：`project-local > user-global > official`（运行时解析时生效）。
 
+技能配置格式说明（v3）：
+
+- `.forgeops/agent-skills.json` 的 `roles.<agentId>` 不再只是 skill name 字符串列表，而是对象数组：
+  - `name`: skill 名称
+  - `whenSteps`: 该 skill 在哪些 stepKey 生效（例如 `["implement"]`）
+  - `priority`: 优先级（用于排序/选择）
+  - `tags`: 标签（用于治理与可观测）
+- 运行时按 `whenSteps` 做 step-scoped 筛选，不再做“固定数量截断”。
+- 在 Issue step 完成后，ForgeOps 会基于 Issue 意图（title/description/task）自动为后续 step 追加少量高信号技能：
+  - 例如出现 `Supabase/Postgres/RLS` 会自动追加 `supabase-postgres-best-practices` 到 `implement/test/review`
+  - 出现 `deployment/CI/CD/docker/k8s` 会追加 `deployment-patterns` / `docker-patterns`
+
 另外还会做 GitHub 绑定：
 
 - 确保是 git 仓库（必要时 `git init`）。

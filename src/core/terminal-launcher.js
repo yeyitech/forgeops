@@ -5,6 +5,15 @@ function shellQuote(value) {
   return `'${raw.replace(/'/g, `'\\''`)}'`;
 }
 
+function renderEnvPrefix(env) {
+  if (!env || typeof env !== "object") return "";
+  const entries = Object.entries(env)
+    .filter(([key]) => Boolean(String(key ?? "").trim()))
+    .map(([key, value]) => `${String(key).trim()}=${shellQuote(String(value ?? ""))}`);
+  if (entries.length === 0) return "";
+  return `${entries.join(" ")} `;
+}
+
 function toAppleScriptString(value) {
   return `"${String(value ?? "")
     .replace(/\\/g, "\\\\")
@@ -12,7 +21,7 @@ function toAppleScriptString(value) {
     .replace(/\n/g, "\\n")}"`;
 }
 
-export function buildCodexResumeShellCommand(codexBin, threadId, cwd) {
+export function buildCodexResumeShellCommand(codexBin, threadId, cwd, env = null) {
   const bin = String(codexBin ?? "").trim() || "codex";
   const thread = String(threadId ?? "").trim();
   const workDir = String(cwd ?? "").trim();
@@ -20,7 +29,8 @@ export function buildCodexResumeShellCommand(codexBin, threadId, cwd) {
     throw new Error("threadId is required");
   }
   const cdArg = workDir ? ` --cd ${shellQuote(workDir)}` : "";
-  return `${shellQuote(bin)} resume --all${cdArg} ${shellQuote(thread)}`;
+  const prefix = renderEnvPrefix(env);
+  return `${prefix}${shellQuote(bin)} resume --all${cdArg} ${shellQuote(thread)}`;
 }
 
 export function launchTerminalCommand(params) {
