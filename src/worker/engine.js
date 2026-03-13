@@ -310,10 +310,16 @@ export class ForgeOpsEngine {
       ? selectRoleSkillsForStep(selection.merged, step.step_key)
       : [];
     const roleSkills = mergedStepScoped.length > 0 ? mergedStepScoped : roleSkillsBase;
+
+    const effectiveEnvVars = this.store.getEffectiveEnvVarsForStep({
+      runId,
+      stepKey: step.step_key,
+    });
     const managedEnv = await prepareManagedCodexEnvironment({
       repoRoot: step.root_path,
       agentId: step.agent_id,
       skills: roleSkills,
+      extraEnv: effectiveEnvVars?.env ?? {},
     });
     if (selection.additionalSkillNames && selection.additionalSkillNames.length > 0) {
       this.store.emitEvent(runId, stepId, "runtime.codex.skills.intent_applied", {
@@ -328,6 +334,17 @@ export class ForgeOpsEngine {
         agentId: step.agent_id,
         warnings: managedEnv.warnings,
       });
+    }
+    if (effectiveEnvVars?.env && typeof effectiveEnvVars.env === "object") {
+      const keys = Object.keys(effectiveEnvVars.env);
+      if (keys.length > 0) {
+        this.store.emitEvent(runId, stepId, "runtime.env.applied", {
+          agentId: step.agent_id,
+          stepKey: step.step_key,
+          scope: "effective_step",
+          keyCount: keys.length,
+        });
+      }
     }
     this.store.emitEvent(runId, stepId, "runtime.codex.managed_env.ready", {
       agentId: step.agent_id,

@@ -164,6 +164,23 @@ forgeops chart run <runId> --step implement
 forgeops chart session <sessionId>
 ```
 
+管理运行时环境变量（支持 system / project / run / step 四级作用域；默认按 secret 脱敏输出，只有加 `--show` 才会打印真实值）：
+
+```bash
+# system 级（影响所有项目/所有 run）
+forgeops env set system OPENAI_API_KEY=... --secret
+forgeops env ls system
+
+# project 级
+forgeops env set project <projectId> SUPABASE_URL=...
+forgeops env ls project <projectId>
+
+# run / step 级（覆盖优先级更高）
+forgeops env set run <runId> FEATURE_FLAG_X=1 --plain
+forgeops env set step <runId> implement DATABASE_URL=... --secret
+forgeops env effective step <runId> implement
+```
+
 ### Issue / Run
 
 ```bash

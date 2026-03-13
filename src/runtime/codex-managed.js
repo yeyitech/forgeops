@@ -280,6 +280,33 @@ async function ensureIsolatedCodexHome(params) {
   };
 }
 
+function isReservedEnvKey(key) {
+  const k = String(key ?? "").trim();
+  if (!k) return true;
+  if (k === "HOME" || k === "USERPROFILE") return true;
+  if (k.startsWith("XDG_")) return true;
+  if (k.startsWith("FORGEOPS_")) return true;
+  if (k.startsWith("CODEX_")) return true;
+  if (k === "CODEX_HOME" || k === "CODEX_SQLITE_HOME" || k === "FORGEOPS_HOME") return true;
+  return false;
+}
+
+function normalizeExtraEnv(raw) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const env = {};
+  const warnings = [];
+  for (const [key, value] of Object.entries(input)) {
+    const k = String(key ?? "").trim();
+    if (!k) continue;
+    if (isReservedEnvKey(k)) {
+      warnings.push(`ignored reserved env key: ${k}`);
+      continue;
+    }
+    env[k] = String(value ?? "");
+  }
+  return { env, warnings };
+}
+
 export async function prepareManagedCodexEnvironment(params) {
   const repoRoot = path.resolve(String(params?.repoRoot ?? ""));
   const agentId = String(params?.agentId ?? "").trim();
@@ -310,12 +337,14 @@ export async function prepareManagedCodexEnvironment(params) {
     sourceCodexHome: params?.sourceCodexHome,
   });
 
+  const extraEnv = normalizeExtraEnv(params?.extraEnv);
   const env = {
     ...codexHome.env,
     ...osHome.env,
     FORGEOPS_REPO_ROOT: repoRoot,
     FORGEOPS_AGENT_ID: agentId,
     FORGEOPS_MANAGED_SKILLS_ROOT: skillRoot.skillsRoot || "",
+    ...extraEnv.env,
   };
 
   return {
@@ -329,6 +358,7 @@ export async function prepareManagedCodexEnvironment(params) {
       ...(skillRoot.warnings ?? []),
       ...(osHome.warnings ?? []),
       ...(codexHome.warnings ?? []),
+      ...(extraEnv.warnings ?? []),
     ],
   };
 }

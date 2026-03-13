@@ -57,6 +57,17 @@ forgeops chart run <runId> --step implement
 forgeops chart session <sessionId>
 ```
 
+## 运行时环境变量管理
+
+ForgeOps 支持按 `system / project / run / step` 四级作用域管理 env vars，并在 step 启动时自动注入给 runtime（默认按 secret 脱敏输出，只有 `--show` 才会打印真实值）：
+
+```bash
+forgeops env set system OPENAI_API_KEY=... --secret
+forgeops env set project <projectId> SUPABASE_URL=...
+forgeops env set step <runId> implement DATABASE_URL=... --secret
+forgeops env effective step <runId> implement
+```
+
 ## User Stories
 
 ### 1. 小团队高频上线

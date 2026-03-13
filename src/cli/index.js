@@ -52,6 +52,19 @@ function printUsage() {
       "forgeops chart project <projectId> [--window-minutes 60] [--out PATH] [--json]",
       "forgeops chart run <runId> [--step STEP_KEY] [--out PATH] [--json]",
       "forgeops chart session <sessionId> [--out PATH] [--json]",
+      "forgeops env set system KEY=VALUE [--secret|--plain]",
+      "forgeops env set project <projectId> KEY=VALUE [--secret|--plain]",
+      "forgeops env set run <runId> KEY=VALUE [--secret|--plain]",
+      "forgeops env set step <runId> <stepKey> KEY=VALUE [--secret|--plain]",
+      "forgeops env ls system [--show] [--json]",
+      "forgeops env ls project <projectId> [--show] [--json]",
+      "forgeops env ls run <runId> [--show] [--json]",
+      "forgeops env ls step <runId> <stepKey> [--show] [--json]",
+      "forgeops env effective step <runId> <stepKey> [--show] [--json]",
+      "forgeops env unset system KEY",
+      "forgeops env unset project <projectId> KEY",
+      "forgeops env unset run <runId> KEY",
+      "forgeops env unset step <runId> <stepKey> KEY",
       "forgeops project init [--name NAME] [--type web|miniapp|ios|microservice|android|serverless|other] [--language LANG] [--frontend-stack STACK] [--backend-stack STACK] [--ci-provider NAME] [--problem TEXT] [--path DIR] [--github-repo OWNER/NAME] [--github-public|--github-private] [--branch-protection|--no-branch-protection] [--no-open-ui]  # default opens Dashboard",
       "forgeops project list",
       "forgeops project metrics <projectId> [--json]",
@@ -118,6 +131,21 @@ function parseBool(value, fallback = null) {
   if (["1", "true", "yes", "on"].includes(text)) return true;
   if (["0", "false", "no", "off"].includes(text)) return false;
   return fallback;
+}
+
+function parseEnvAssignment(args, index) {
+  const raw = String(args[index] ?? "").trim();
+  if (!raw) return { key: "", value: "", consumed: 0 };
+  const eqIdx = raw.indexOf("=");
+  if (eqIdx !== -1) {
+    return {
+      key: raw.slice(0, eqIdx).trim(),
+      value: raw.slice(eqIdx + 1),
+      consumed: 1,
+    };
+  }
+  const value = args[index + 1] === undefined ? "" : String(args[index + 1]);
+  return { key: raw, value, consumed: 2 };
 }
 
 function normalizeRunModeFlag(value, fallback = "quick") {
@@ -2325,6 +2353,206 @@ async function commandStart(args) {
   process.stdout.write(`Scheduler: managed_projects=${scheduler.getState().managedProjects}\n`);
 }
 
+async function commandEnv(store, args) {
+  const sub = String(args[0] ?? "").trim().toLowerCase();
+  const asJson = args.includes("--json");
+  const show = args.includes("--show");
+
+  if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+    fail("Usage: forgeops env set|ls|unset|effective ...");
+  }
+
+  if (sub === "set") {
+    const scope = String(args[1] ?? "").trim().toLowerCase();
+    const secret = args.includes("--plain") ? false : true;
+    const forceSecret = args.includes("--secret");
+    const isSecret = forceSecret ? true : secret;
+
+    if (scope === "system") {
+      const kv = parseEnvAssignment(args, 2);
+      if (!kv.key) fail("Usage: forgeops env set system KEY=VALUE [--secret|--plain]");
+      const row = store.setEnvVar({ scopeType: "system", key: kv.key, value: kv.value, secret: isSecret });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ ok: true, scope: "system", envKey: kv.key, isSecret, row }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`OK env set system ${kv.key} (${isSecret ? "secret" : "plain"})\n`);
+      return;
+    }
+
+    if (scope === "project") {
+      const projectId = String(args[2] ?? "").trim();
+      if (!projectId) fail("Usage: forgeops env set project <projectId> KEY=VALUE [--secret|--plain]");
+      const kv = parseEnvAssignment(args, 3);
+      if (!kv.key) fail("Usage: forgeops env set project <projectId> KEY=VALUE [--secret|--plain]");
+      const row = store.setEnvVar({ scopeType: "project", projectId, key: kv.key, value: kv.value, secret: isSecret });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ ok: true, scope: "project", projectId, envKey: kv.key, isSecret, row }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`OK env set project=${projectId} ${kv.key} (${isSecret ? "secret" : "plain"})\n`);
+      return;
+    }
+
+    if (scope === "run") {
+      const runId = String(args[2] ?? "").trim();
+      if (!runId) fail("Usage: forgeops env set run <runId> KEY=VALUE [--secret|--plain]");
+      const kv = parseEnvAssignment(args, 3);
+      if (!kv.key) fail("Usage: forgeops env set run <runId> KEY=VALUE [--secret|--plain]");
+      const row = store.setEnvVar({ scopeType: "run", runId, key: kv.key, value: kv.value, secret: isSecret });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ ok: true, scope: "run", runId, envKey: kv.key, isSecret, row }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`OK env set run=${runId} ${kv.key} (${isSecret ? "secret" : "plain"})\n`);
+      return;
+    }
+
+    if (scope === "step") {
+      const runId = String(args[2] ?? "").trim();
+      const stepKey = String(args[3] ?? "").trim();
+      if (!runId || !stepKey) fail("Usage: forgeops env set step <runId> <stepKey> KEY=VALUE [--secret|--plain]");
+      const kv = parseEnvAssignment(args, 4);
+      if (!kv.key) fail("Usage: forgeops env set step <runId> <stepKey> KEY=VALUE [--secret|--plain]");
+      const row = store.setEnvVar({ scopeType: "step", runId, stepKey, key: kv.key, value: kv.value, secret: isSecret });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ ok: true, scope: "step", runId, stepKey, envKey: kv.key, isSecret, row }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`OK env set step=${stepKey} run=${runId} ${kv.key} (${isSecret ? "secret" : "plain"})\n`);
+      return;
+    }
+
+    fail("Usage: forgeops env set system|project|run|step ...");
+  }
+
+  if (sub === "ls" || sub === "list") {
+    const scope = String(args[1] ?? "").trim().toLowerCase();
+    if (scope === "system") {
+      const rows = store.listEnvVars({ scopeType: "system", showValues: show });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "system", rows }, null, 2)}\n`);
+        return;
+      }
+      for (const row of rows) {
+        process.stdout.write(`${row.env_key}=${row.env_value}${row.is_secret ? "  # secret" : ""}\n`);
+      }
+      return;
+    }
+    if (scope === "project") {
+      const projectId = String(args[2] ?? "").trim();
+      if (!projectId) fail("Usage: forgeops env ls project <projectId> [--show] [--json]");
+      const rows = store.listEnvVars({ scopeType: "project", projectId, showValues: show });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "project", projectId, rows }, null, 2)}\n`);
+        return;
+      }
+      for (const row of rows) {
+        process.stdout.write(`${row.env_key}=${row.env_value}${row.is_secret ? "  # secret" : ""}\n`);
+      }
+      return;
+    }
+    if (scope === "run") {
+      const runId = String(args[2] ?? "").trim();
+      if (!runId) fail("Usage: forgeops env ls run <runId> [--show] [--json]");
+      const rows = store.listEnvVars({ scopeType: "run", runId, showValues: show });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "run", runId, rows }, null, 2)}\n`);
+        return;
+      }
+      for (const row of rows) {
+        process.stdout.write(`${row.env_key}=${row.env_value}${row.is_secret ? "  # secret" : ""}\n`);
+      }
+      return;
+    }
+    if (scope === "step") {
+      const runId = String(args[2] ?? "").trim();
+      const stepKey = String(args[3] ?? "").trim();
+      if (!runId || !stepKey) fail("Usage: forgeops env ls step <runId> <stepKey> [--show] [--json]");
+      const rows = store.listEnvVars({ scopeType: "step", runId, stepKey, showValues: show });
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "step", runId, stepKey, rows }, null, 2)}\n`);
+        return;
+      }
+      for (const row of rows) {
+        process.stdout.write(`${row.env_key}=${row.env_value}${row.is_secret ? "  # secret" : ""}\n`);
+      }
+      return;
+    }
+    fail("Usage: forgeops env ls system|project|run|step ...");
+  }
+
+  if (sub === "unset" || sub === "rm" || sub === "del" || sub === "delete") {
+    const scope = String(args[1] ?? "").trim().toLowerCase();
+    if (scope === "system") {
+      const key = String(args[2] ?? "").trim();
+      if (!key) fail("Usage: forgeops env unset system KEY");
+      const ok = store.unsetEnvVar({ scopeType: "system", key });
+      process.stdout.write(ok ? "OK\n" : "Not found\n");
+      return;
+    }
+    if (scope === "project") {
+      const projectId = String(args[2] ?? "").trim();
+      const key = String(args[3] ?? "").trim();
+      if (!projectId || !key) fail("Usage: forgeops env unset project <projectId> KEY");
+      const ok = store.unsetEnvVar({ scopeType: "project", projectId, key });
+      process.stdout.write(ok ? "OK\n" : "Not found\n");
+      return;
+    }
+    if (scope === "run") {
+      const runId = String(args[2] ?? "").trim();
+      const key = String(args[3] ?? "").trim();
+      if (!runId || !key) fail("Usage: forgeops env unset run <runId> KEY");
+      const ok = store.unsetEnvVar({ scopeType: "run", runId, key });
+      process.stdout.write(ok ? "OK\n" : "Not found\n");
+      return;
+    }
+    if (scope === "step") {
+      const runId = String(args[2] ?? "").trim();
+      const stepKey = String(args[3] ?? "").trim();
+      const key = String(args[4] ?? "").trim();
+      if (!runId || !stepKey || !key) fail("Usage: forgeops env unset step <runId> <stepKey> KEY");
+      const ok = store.unsetEnvVar({ scopeType: "step", runId, stepKey, key });
+      process.stdout.write(ok ? "OK\n" : "Not found\n");
+      return;
+    }
+    fail("Usage: forgeops env unset system|project|run|step ...");
+  }
+
+  if (sub === "effective") {
+    const scope = String(args[1] ?? "").trim().toLowerCase();
+    if (scope !== "step") {
+      fail("Usage: forgeops env effective step <runId> <stepKey> [--show] [--json]");
+    }
+    const runId = String(args[2] ?? "").trim();
+    const stepKey = String(args[3] ?? "").trim();
+    if (!runId || !stepKey) fail("Usage: forgeops env effective step <runId> <stepKey> [--show] [--json]");
+    const effective = store.getEffectiveEnvVarsForStep({ runId, stepKey });
+    const out = Object.entries(effective.env)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => {
+        const meta = effective.meta[k] ?? {};
+        const isSecret = Boolean(meta.is_secret);
+        return {
+          env_key: k,
+          env_value: show ? v : (isSecret ? "***" : v),
+          is_secret: isSecret,
+          scope_type: String(meta.scope_type ?? ""),
+        };
+      });
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify({ scope: "step", runId, stepKey, rows: out }, null, 2)}\n`);
+      return;
+    }
+    for (const row of out) {
+      process.stdout.write(`${row.env_key}=${row.env_value}${row.is_secret ? "  # secret" : ""}  # from ${row.scope_type}\n`);
+    }
+    return;
+  }
+
+  fail("Usage: forgeops env set|ls|unset|effective ...");
+}
+
 async function commandChart(store, args) {
   const scope = String(args[0] ?? "").trim().toLowerCase();
   const asJson = args.includes("--json");
@@ -2611,6 +2839,11 @@ async function main() {
 
     if (command === "chart") {
       await commandChart(store, args.slice(1));
+      return;
+    }
+
+    if (command === "env") {
+      await commandEnv(store, args.slice(1));
       return;
     }
 

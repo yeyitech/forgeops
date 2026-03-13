@@ -124,6 +124,46 @@ const CLEANUP_EVENT_SEED_MAX_CANDIDATES = 3;
 const SKILL_FEEDBACK_WINDOW_DAYS = 14;
 const SKILL_FEEDBACK_MIN_SAMPLE_RUNS = 2;
 
+const ENV_SCOPE_SYSTEM = "system";
+const ENV_SCOPE_PROJECT = "project";
+const ENV_SCOPE_RUN = "run";
+const ENV_SCOPE_STEP = "step";
+const ENV_SCOPES = new Set([ENV_SCOPE_SYSTEM, ENV_SCOPE_PROJECT, ENV_SCOPE_RUN, ENV_SCOPE_STEP]);
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_RESERVED_KEYS = new Set([
+  "HOME",
+  "USERPROFILE",
+  "CODEX_HOME",
+  "CODEX_SQLITE_HOME",
+  "FORGEOPS_HOME",
+]);
+const ENV_RESERVED_PREFIXES = ["FORGEOPS_", "CODEX_", "XDG_"];
+
+function normalizeEnvKey(key) {
+  const text = String(key ?? "").trim();
+  if (!text) return "";
+  return text;
+}
+
+function isReservedEnvKey(key) {
+  if (!key) return true;
+  if (ENV_RESERVED_KEYS.has(key)) return true;
+  return ENV_RESERVED_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function maskEnvValue(value) {
+  const raw = String(value ?? "");
+  if (!raw) return "";
+  // Avoid leaking length; stable mask.
+  return "***";
+}
+
+function normalizeEnvScope(scopeType) {
+  const text = String(scopeType ?? "").trim().toLowerCase();
+  if (ENV_SCOPES.has(text)) return text;
+  return "";
+}
+
 function ensureUserGlobalSkillsBootstrapFiles(rootPath) {
   const resolved = path.resolve(rootPath);
   fs.mkdirSync(resolved, { recursive: true });
@@ -2004,6 +2044,7 @@ export class ForgeOpsStore {
     this.db.exec(`
       PRAGMA journal_mode=WAL;
       PRAGMA foreign_keys=ON;
+      PRAGMA busy_timeout=5000;
 
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -2113,6 +2154,19 @@ export class ForgeOpsStore {
         meta_json TEXT NOT NULL DEFAULT '{}'
       );
 
+      CREATE TABLE IF NOT EXISTS env_vars (
+        id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        run_id TEXT NOT NULL DEFAULT '',
+        step_key TEXT NOT NULL DEFAULT '',
+        env_key TEXT NOT NULL,
+        env_value TEXT NOT NULL,
+        is_secret INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_project_issue_running
         ON runs(project_id, github_issue_id)
@@ -2123,6 +2177,10 @@ export class ForgeOpsStore {
       CREATE INDEX IF NOT EXISTS idx_steps_status ON steps(status);
       CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
       CREATE INDEX IF NOT EXISTS idx_locks_expires_at ON locks(expires_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_env_vars_scope_key
+        ON env_vars(scope_type, project_id, run_id, step_key, env_key);
+      CREATE INDEX IF NOT EXISTS idx_env_vars_scope
+        ON env_vars(scope_type, project_id, run_id, step_key);
     `);
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_project_issue_running
@@ -2289,6 +2347,257 @@ export class ForgeOpsStore {
 
   getDbPath() {
     return DB_PATH;
+  }
+
+  setEnvVar(params) {
+    const scopeType = normalizeEnvScope(params?.scopeType ?? params?.scope ?? "");
+    if (!scopeType) {
+      throw new Error("Invalid env scope. Expected one of: system, project, run, step");
+    }
+
+    const key = normalizeEnvKey(params?.key ?? params?.envKey ?? "");
+    if (!key) throw new Error("env key is required");
+    if (!ENV_KEY_PATTERN.test(key)) {
+      throw new Error(`Invalid env key: ${key}`);
+    }
+    if (isReservedEnvKey(key)) {
+      throw new Error(`env key is reserved and cannot be managed by ForgeOps: ${key}`);
+    }
+
+    const value = String(params?.value ?? params?.envValue ?? "");
+    const isSecret = parseBoolLike(params?.secret ?? params?.isSecret, true) ? 1 : 0;
+
+    let projectId = "";
+    let runId = "";
+    let stepKey = "";
+
+    if (scopeType === ENV_SCOPE_PROJECT) {
+      projectId = String(params?.projectId ?? "").trim();
+      if (!projectId) throw new Error("projectId is required for project-scoped env var");
+      const project = this.getProject(projectId);
+      if (!project) throw new Error(`Project not found: ${projectId}`);
+    } else if (scopeType === ENV_SCOPE_RUN) {
+      runId = String(params?.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required for run-scoped env var");
+      const run = this.getRun(runId);
+      if (!run) throw new Error(`Run not found: ${runId}`);
+      projectId = String(run.project_id ?? "").trim();
+    } else if (scopeType === ENV_SCOPE_STEP) {
+      runId = String(params?.runId ?? "").trim();
+      stepKey = String(params?.stepKey ?? "").trim();
+      if (!runId || !stepKey) throw new Error("runId and stepKey are required for step-scoped env var");
+      const run = this.getRun(runId);
+      if (!run) throw new Error(`Run not found: ${runId}`);
+      projectId = String(run.project_id ?? "").trim();
+    }
+
+    const now = nowIso();
+    const insert = this.db.prepare(
+      `INSERT INTO env_vars (id, scope_type, project_id, run_id, step_key, env_key, env_value, is_secret, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(scope_type, project_id, run_id, step_key, env_key)
+       DO UPDATE SET
+         env_value = excluded.env_value,
+         is_secret = excluded.is_secret,
+         updated_at = excluded.updated_at`
+    );
+    insert.run(
+      newId("env"),
+      scopeType,
+      projectId,
+      runId,
+      stepKey,
+      key,
+      value,
+      isSecret,
+      now,
+      now,
+    );
+
+    const row = this.db.prepare(
+      `SELECT * FROM env_vars
+       WHERE scope_type = ?
+         AND project_id = ?
+         AND run_id = ?
+         AND step_key = ?
+         AND env_key = ?
+       LIMIT 1`
+    ).get(scopeType, projectId, runId, stepKey, key);
+    return row && typeof row === "object" ? row : null;
+  }
+
+  unsetEnvVar(params) {
+    const scopeType = normalizeEnvScope(params?.scopeType ?? params?.scope ?? "");
+    if (!scopeType) {
+      throw new Error("Invalid env scope. Expected one of: system, project, run, step");
+    }
+    const key = normalizeEnvKey(params?.key ?? params?.envKey ?? "");
+    if (!key) throw new Error("env key is required");
+
+    const runId = String(params?.runId ?? "").trim();
+    const stepKey = String(params?.stepKey ?? "").trim();
+    let deleted;
+    if (scopeType === ENV_SCOPE_SYSTEM) {
+      deleted = this.db.prepare(
+        `DELETE FROM env_vars
+         WHERE scope_type = ?
+           AND project_id = ''
+           AND run_id = ''
+           AND step_key = ''
+           AND env_key = ?`
+      ).run(scopeType, key);
+    } else if (scopeType === ENV_SCOPE_PROJECT) {
+      const projectId = String(params?.projectId ?? "").trim();
+      if (!projectId) throw new Error("projectId is required");
+      deleted = this.db.prepare(
+        `DELETE FROM env_vars
+         WHERE scope_type = ?
+           AND project_id = ?
+           AND run_id = ''
+           AND step_key = ''
+           AND env_key = ?`
+      ).run(scopeType, projectId, key);
+    } else if (scopeType === ENV_SCOPE_RUN) {
+      if (!runId) throw new Error("runId is required");
+      deleted = this.db.prepare(
+        `DELETE FROM env_vars
+         WHERE scope_type = ?
+           AND run_id = ?
+           AND step_key = ''
+           AND env_key = ?`
+      ).run(scopeType, runId, key);
+    } else {
+      if (!runId || !stepKey) throw new Error("runId and stepKey are required");
+      deleted = this.db.prepare(
+        `DELETE FROM env_vars
+         WHERE scope_type = ?
+           AND run_id = ?
+           AND step_key = ?
+           AND env_key = ?`
+      ).run(scopeType, runId, stepKey, key);
+    }
+    return Number(deleted?.changes ?? 0) > 0;
+  }
+
+  listEnvVars(params) {
+    const scopeType = normalizeEnvScope(params?.scopeType ?? params?.scope ?? "");
+    if (!scopeType) {
+      throw new Error("Invalid env scope. Expected one of: system, project, run, step");
+    }
+    const showValues = Boolean(params?.showValues ?? params?.show ?? false);
+
+    let rows;
+    if (scopeType === ENV_SCOPE_SYSTEM) {
+      rows = this.db.prepare(
+        `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret, created_at, updated_at
+         FROM env_vars
+         WHERE scope_type = ?
+           AND project_id = ''
+           AND run_id = ''
+           AND step_key = ''
+         ORDER BY env_key ASC`
+      ).all(scopeType);
+    } else if (scopeType === ENV_SCOPE_PROJECT) {
+      const projectId = String(params?.projectId ?? "").trim();
+      if (!projectId) throw new Error("projectId is required");
+      rows = this.db.prepare(
+        `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret, created_at, updated_at
+         FROM env_vars
+         WHERE scope_type = ?
+           AND project_id = ?
+           AND run_id = ''
+           AND step_key = ''
+         ORDER BY env_key ASC`
+      ).all(scopeType, projectId);
+    } else if (scopeType === ENV_SCOPE_RUN) {
+      const runId = String(params?.runId ?? "").trim();
+      if (!runId) throw new Error("runId is required");
+      rows = this.db.prepare(
+        `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret, created_at, updated_at
+         FROM env_vars
+         WHERE scope_type = ?
+           AND run_id = ?
+           AND step_key = ''
+         ORDER BY env_key ASC`
+      ).all(scopeType, runId);
+    } else {
+      const runId = String(params?.runId ?? "").trim();
+      const stepKey = String(params?.stepKey ?? "").trim();
+      if (!runId || !stepKey) throw new Error("runId and stepKey are required");
+      rows = this.db.prepare(
+        `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret, created_at, updated_at
+         FROM env_vars
+         WHERE scope_type = ?
+           AND run_id = ?
+           AND step_key = ?
+         ORDER BY env_key ASC`
+      ).all(scopeType, runId, stepKey);
+    }
+
+    return rows.map((row) => {
+      const isSecret = Number(row?.is_secret ?? 0) === 1;
+      return {
+        scope_type: String(row?.scope_type ?? ""),
+        project_id: String(row?.project_id ?? ""),
+        run_id: String(row?.run_id ?? ""),
+        step_key: String(row?.step_key ?? ""),
+        env_key: String(row?.env_key ?? ""),
+        env_value: showValues ? String(row?.env_value ?? "") : (isSecret ? maskEnvValue(row?.env_value) : String(row?.env_value ?? "")),
+        is_secret: isSecret,
+        created_at: String(row?.created_at ?? ""),
+        updated_at: String(row?.updated_at ?? ""),
+      };
+    });
+  }
+
+  getEffectiveEnvVarsForStep(params) {
+    const runId = String(params?.runId ?? "").trim();
+    const stepKey = String(params?.stepKey ?? "").trim();
+    if (!runId || !stepKey) {
+      return { env: {}, meta: {} };
+    }
+    const run = this.getRun(runId);
+    if (!run) {
+      return { env: {}, meta: {} };
+    }
+    const projectId = String(run.project_id ?? "").trim();
+
+    const rows = [];
+    rows.push(...this.db.prepare(
+      `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret
+       FROM env_vars
+       WHERE scope_type = ? AND project_id = '' AND run_id = '' AND step_key = ''`
+    ).all(ENV_SCOPE_SYSTEM));
+    if (projectId) {
+      rows.push(...this.db.prepare(
+        `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret
+         FROM env_vars
+         WHERE scope_type = ? AND project_id = ? AND run_id = '' AND step_key = ''`
+      ).all(ENV_SCOPE_PROJECT, projectId));
+    }
+    rows.push(...this.db.prepare(
+      `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret
+       FROM env_vars
+       WHERE scope_type = ? AND run_id = ? AND step_key = ''`
+    ).all(ENV_SCOPE_RUN, runId));
+    rows.push(...this.db.prepare(
+      `SELECT scope_type, project_id, run_id, step_key, env_key, env_value, is_secret
+       FROM env_vars
+       WHERE scope_type = ? AND run_id = ? AND step_key = ?`
+    ).all(ENV_SCOPE_STEP, runId, stepKey));
+
+    const env = {};
+    const meta = {};
+    for (const row of rows) {
+      const k = String(row?.env_key ?? "").trim();
+      if (!k || isReservedEnvKey(k) || !ENV_KEY_PATTERN.test(k)) continue;
+      env[k] = String(row?.env_value ?? "");
+      meta[k] = {
+        scope_type: String(row?.scope_type ?? ""),
+        is_secret: Number(row?.is_secret ?? 0) === 1,
+      };
+    }
+    return { env, meta };
   }
 
   listProjects() {
