@@ -47,9 +47,6 @@ ForgeOps 的处理方式：
 ```bash
 forgeops chart system
 forgeops chart project <projectId>
-forgeops chart run <runId>
-forgeops chart run <runId> --step implement
-forgeops chart session <sessionId>
 ```
 
 ## Harness 不是口号，是可执行约束

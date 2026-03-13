@@ -159,9 +159,6 @@ forgeops status --chart svg --out ./forgeops-status.svg
 ```bash
 forgeops chart system
 forgeops chart project <projectId>
-forgeops chart run <runId>
-forgeops chart run <runId> --step implement
-forgeops chart session <sessionId>
 ```
 
 管理运行时环境变量（支持 system / project / run / step 四级作用域；默认按 secret 脱敏输出，只有加 `--show` 才会打印真实值）：

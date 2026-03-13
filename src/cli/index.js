@@ -50,8 +50,8 @@ function printUsage() {
       "forgeops status [--window-minutes 60] --chart svg [--out PATH | --stdout]  # generate chart (SVG)",
       "forgeops chart system [--window-minutes 60] [--out PATH] [--json]  # writes SVG under runtime charts dir by default",
       "forgeops chart project <projectId> [--window-minutes 60] [--out PATH] [--json]",
-      "forgeops chart run <runId> [--step STEP_KEY] [--out PATH] [--json]",
-      "forgeops chart session <sessionId> [--out PATH] [--json]",
+      "forgeops chart run <runId> ... [--experimental]  # not enabled by default",
+      "forgeops chart session <sessionId> ... [--experimental]  # not enabled by default",
       "forgeops env set system KEY=VALUE [--secret|--plain]",
       "forgeops env set project <projectId> KEY=VALUE [--secret|--plain]",
       "forgeops env set run <runId> KEY=VALUE [--secret|--plain]",
@@ -2557,6 +2557,7 @@ async function commandChart(store, args) {
   const scope = String(args[0] ?? "").trim().toLowerCase();
   const asJson = args.includes("--json");
   const outFlag = String(getFlag(args, "--out", "") ?? "").trim();
+  const experimental = args.includes("--experimental") || String(process.env.FORGEOPS_CHART_EXPERIMENTAL ?? "").trim() === "1";
 
   if (!scope || scope === "help" || scope === "--help" || scope === "-h") {
     fail("Usage: forgeops chart system|project|run|session ...");
@@ -2594,6 +2595,9 @@ async function commandChart(store, args) {
   }
 
   if (scope === "run") {
+    if (!experimental) {
+      fail("Chart scope 'run' is not enabled by default. Supported: system, project. Use --experimental to enable run/session charts.");
+    }
     const runId = String(args[1] ?? "").trim();
     if (!runId) fail("Usage: forgeops chart run <runId> [--step STEP_KEY] [--out PATH] [--json]");
     const stepKey = String(getFlag(args, "--step", "") ?? "").trim();
@@ -2684,6 +2688,9 @@ async function commandChart(store, args) {
   }
 
   if (scope === "session") {
+    if (!experimental) {
+      fail("Chart scope 'session' is not enabled by default. Supported: system, project. Use --experimental to enable run/session charts.");
+    }
     const sessionId = String(args[1] ?? "").trim();
     if (!sessionId) fail("Usage: forgeops chart session <sessionId> [--out PATH] [--json]");
     const row = store.getSessionDetails(sessionId);

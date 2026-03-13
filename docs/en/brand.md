@@ -47,9 +47,6 @@ When you need to share “what is the system doing right now” as evidence, For
 ```bash
 forgeops chart system
 forgeops chart project <projectId>
-forgeops chart run <runId>
-forgeops chart run <runId> --step implement
-forgeops chart session <sessionId>
 ```
 
 ## Harness is an executable discipline, not a slogan

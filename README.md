@@ -48,13 +48,6 @@ forgeops chart system
 
 # 项目维度
 forgeops chart project <projectId>
-
-# run 维度（可按 step 聚焦）
-forgeops chart run <runId>
-forgeops chart run <runId> --step implement
-
-# session 维度（单个 step session）
-forgeops chart session <sessionId>
 ```
 
 ## 运行时环境变量管理
