@@ -12,7 +12,7 @@ import { normalizeProductType } from "../core/product-type.js";
 import { initProjectScaffold } from "../core/project-init.js";
 import { resolveRunAttachContext } from "../core/run-attach.js";
 import { findCodexSessionJsonlForThread, readTailTextFile, resolveManagedCodexHome } from "../core/codex-session-log.js";
-import { renderSystemStatusSvg } from "../core/status-chart.js";
+import { renderProjectStatusSvg, renderRunStatusSvg, renderSessionStatusSvg, renderSystemStatusSvg } from "../core/status-chart.js";
 import {
   getForgeOpsServiceInfo,
   installForgeOpsService,
@@ -48,6 +48,10 @@ function printUsage() {
       "forgeops start [--port 4173] [--host 127.0.0.1] [--poll-ms 1500] [--concurrency 2]",
       "forgeops status [--window-minutes 60] [--json]  # control-plane status (runs/steps/sessions/events/tokens)",
       "forgeops status [--window-minutes 60] --chart svg [--out PATH | --stdout]  # generate chart (SVG)",
+      "forgeops chart system [--window-minutes 60] [--out PATH] [--json]  # writes SVG under runtime charts dir by default",
+      "forgeops chart project <projectId> [--window-minutes 60] [--out PATH] [--json]",
+      "forgeops chart run <runId> [--step STEP_KEY] [--out PATH] [--json]",
+      "forgeops chart session <sessionId> [--out PATH] [--json]",
       "forgeops project init [--name NAME] [--type web|miniapp|ios|microservice|android|serverless|other] [--language LANG] [--frontend-stack STACK] [--backend-stack STACK] [--ci-provider NAME] [--problem TEXT] [--path DIR] [--github-repo OWNER/NAME] [--github-public|--github-private] [--branch-protection|--no-branch-protection] [--no-open-ui]  # default opens Dashboard",
       "forgeops project list",
       "forgeops project metrics <projectId> [--json]",
@@ -659,6 +663,28 @@ async function commandSkill(store, args) {
   }
 
   fail("Unknown skill command. Try: forgeops skill global-status|global-init|candidates|resolve|promote|promote-global");
+}
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function isoFileSafeNow() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function resolveDefaultChartPath(scope, id = "") {
+  const base = path.join(resolveForgeOpsRuntimeHome(), "charts", scope);
+  ensureDir(base);
+  const suffix = isoFileSafeNow();
+  const safeId = String(id ?? "").trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const name = safeId ? `${scope}-${safeId}-${suffix}.svg` : `${scope}-${suffix}.svg`;
+  return path.join(base, name);
+}
+
+function writeChartOutput(svg, outPath) {
+  ensureDir(path.dirname(outPath));
+  fs.writeFileSync(outPath, svg, "utf8");
 }
 
 async function commandRun(store, args) {
@@ -2299,6 +2325,173 @@ async function commandStart(args) {
   process.stdout.write(`Scheduler: managed_projects=${scheduler.getState().managedProjects}\n`);
 }
 
+async function commandChart(store, args) {
+  const scope = String(args[0] ?? "").trim().toLowerCase();
+  const asJson = args.includes("--json");
+  const outFlag = String(getFlag(args, "--out", "") ?? "").trim();
+
+  if (!scope || scope === "help" || scope === "--help" || scope === "-h") {
+    fail("Usage: forgeops chart system|project|run|session ...");
+  }
+
+  if (scope === "system") {
+    const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
+    const status = store.getSystemStatus({ windowMinutes });
+    const outPath = path.resolve(outFlag || resolveDefaultChartPath("system"));
+    const svg = renderSystemStatusSvg(status, { title: "ForgeOps System Status" });
+    writeChartOutput(svg, outPath);
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify({ scope: "system", windowMinutes, path: outPath }, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`Wrote chart: ${outPath}\n`);
+    return;
+  }
+
+  if (scope === "project") {
+    const projectId = String(args[1] ?? "").trim();
+    if (!projectId) fail("Usage: forgeops chart project <projectId> [--window-minutes 60] [--out PATH] [--json]");
+    const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
+    const status = store.getProjectStatus(projectId, { windowMinutes });
+    const projectName = String(status?.project?.name ?? "").trim();
+    const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId));
+    const svg = renderProjectStatusSvg(status, { projectId, projectName });
+    writeChartOutput(svg, outPath);
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify({ scope: "project", projectId, windowMinutes, path: outPath }, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`Wrote chart: ${outPath}\n`);
+    return;
+  }
+
+  if (scope === "run") {
+    const runId = String(args[1] ?? "").trim();
+    if (!runId) fail("Usage: forgeops chart run <runId> [--step STEP_KEY] [--out PATH] [--json]");
+    const stepKey = String(getFlag(args, "--step", "") ?? "").trim();
+    const details = store.getRunDetails(runId);
+    if (!details) fail(`Run not found: ${runId}`);
+
+    const steps = Array.isArray(details.steps) ? details.steps : [];
+    const sessions = Array.isArray(details.sessions) ? details.sessions : [];
+    const events = Array.isArray(details.events) ? details.events : [];
+
+    const countBy = (rows, keyFn) => {
+      const out = {};
+      for (const row of rows) {
+        const key = String(keyFn(row) ?? "").trim() || "unknown";
+        out[key] = Number(out[key] ?? 0) + 1;
+      }
+      return out;
+    };
+
+    const stepsFiltered = stepKey ? steps.filter((row) => String(row.step_key ?? "").trim() === stepKey) : steps;
+    const stepIds = new Set(stepsFiltered.map((row) => String(row.id ?? "").trim()).filter(Boolean));
+    const sessionsFiltered = stepKey
+      ? sessions.filter((row) => stepIds.has(String(row.step_id ?? "").trim()))
+      : sessions;
+
+    const stepsByStatus = countBy(stepsFiltered, (row) => row.status);
+    const sessionsByStatus = countBy(sessionsFiltered, (row) => row.status);
+    const eventsByTypeTop = (() => {
+      const counts = countBy(events, (row) => row.event_type);
+      const entries = Object.entries(counts).map(([k, v]) => ({ k, v }));
+      entries.sort((a, b) => Number(b.v) - Number(a.v));
+      const out = {};
+      for (const row of entries.slice(0, 16)) out[row.k] = row.v;
+      return out;
+    })();
+
+    const queue = {
+      waiting: Number(stepsFiltered.filter((r) => r.status === "waiting").length),
+      pending: Number(stepsFiltered.filter((r) => r.status === "pending").length),
+      running: Number(stepsFiltered.filter((r) => r.status === "running").length),
+      failed: Number(stepsFiltered.filter((r) => r.status === "failed").length),
+    };
+
+    const tokens = (() => {
+      let input = 0;
+      let cachedInput = 0;
+      let output = 0;
+      let reasoningOutput = 0;
+      for (const se of sessionsFiltered) {
+        input += Number(se.token_input ?? 0) || 0;
+        cachedInput += Number(se.token_cached_input ?? 0) || 0;
+        output += Number(se.token_output ?? 0) || 0;
+        reasoningOutput += Number(se.token_reasoning_output ?? 0) || 0;
+      }
+      return {
+        windowMinutes: 0,
+        since: "",
+        sessions: sessionsFiltered.length,
+        input,
+        cachedInput,
+        output,
+        reasoningOutput,
+        total: input + cachedInput + output + reasoningOutput,
+      };
+    })();
+
+    const snapshot = {
+      now: new Date().toISOString(),
+      windowMinutes: 0,
+      since: "",
+      runsByStatus: { [String(details.run.status ?? "unknown")]: 1 },
+      stepsByStatus,
+      sessionsByStatus,
+      queue,
+      events: { windowMinutes: 0, since: "", total: events.length, byTypeTop: eventsByTypeTop },
+      tokens,
+    };
+
+    const outPath = path.resolve(outFlag || resolveDefaultChartPath("run", runId));
+    const svg = renderRunStatusSvg(snapshot, { runId, task: String(details.run.task ?? ""), subtitle: stepKey ? `step=${stepKey}` : "" });
+    writeChartOutput(svg, outPath);
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify({ scope: "run", runId, stepKey: stepKey || null, path: outPath }, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`Wrote chart: ${outPath}\n`);
+    return;
+  }
+
+  if (scope === "session") {
+    const sessionId = String(args[1] ?? "").trim();
+    if (!sessionId) fail("Usage: forgeops chart session <sessionId> [--out PATH] [--json]");
+    const row = store.getSessionDetails(sessionId);
+    if (!row) fail(`Session not found: ${sessionId}`);
+
+    const tokens = {
+      input: Number(row.token_input ?? 0) || 0,
+      cachedInput: Number(row.token_cached_input ?? 0) || 0,
+      output: Number(row.token_output ?? 0) || 0,
+      reasoningOutput: Number(row.token_reasoning_output ?? 0) || 0,
+    };
+    tokens.total = tokens.input + tokens.cachedInput + tokens.output + tokens.reasoningOutput;
+    const snapshot = {
+      now: new Date().toISOString(),
+      status: String(row.status ?? ""),
+      tokens,
+    };
+
+    const outPath = path.resolve(outFlag || resolveDefaultChartPath("session", sessionId));
+    const svg = renderSessionStatusSvg(snapshot, {
+      sessionId,
+      stepKey: String(row.step_key ?? ""),
+      agentId: String(row.agent_id ?? ""),
+    });
+    writeChartOutput(svg, outPath);
+    if (asJson) {
+      process.stdout.write(`${JSON.stringify({ scope: "session", sessionId, path: outPath }, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(`Wrote chart: ${outPath}\n`);
+    return;
+  }
+
+  fail("Usage: forgeops chart system|project|run|session ...");
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0] ?? "help";
@@ -2359,12 +2552,9 @@ async function main() {
           process.stdout.write(`${svg}\n`);
           return;
         }
-        const defaultName = `forgeops-status-${new Date().toISOString().replace(/[:.]/g, "-")}.svg`;
-        const outPath = path.resolve(outFlag || path.join(process.cwd(), defaultName));
-        fs.mkdirSync(path.dirname(outPath), { recursive: true });
-        fs.writeFileSync(outPath, svg, "utf8");
+        const outPath = path.resolve(outFlag || resolveDefaultChartPath("system"));
+        writeChartOutput(svg, outPath);
         process.stdout.write(`Wrote chart: ${outPath}\n`);
-        process.stdout.write(`Tip: open ${outPath}\n`);
         return;
       }
 
@@ -2416,6 +2606,11 @@ async function main() {
       process.stdout.write(
         `Tokens (last ${status.tokens.windowMinutes}m): total=${status.tokens.total} (in=${status.tokens.input} cached=${status.tokens.cachedInput} out=${status.tokens.output} reasoning=${status.tokens.reasoningOutput}) sessions=${status.tokens.sessions}\n`
       );
+      return;
+    }
+
+    if (command === "chart") {
+      await commandChart(store, args.slice(1));
       return;
     }
 

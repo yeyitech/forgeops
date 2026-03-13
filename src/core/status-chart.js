@@ -227,3 +227,82 @@ export function renderSystemStatusSvg(status, options = {}) {
   return parts.join("");
 }
 
+export function renderProjectStatusSvg(projectStatus, options = {}) {
+  const projectName = normalizeText(options?.projectName);
+  const projectId = normalizeText(options?.projectId);
+  const title = projectName
+    ? `ForgeOps Project: ${projectName}`
+    : (projectId ? `ForgeOps Project: ${projectId}` : "ForgeOps Project");
+  const subtitle = normalizeText(options?.subtitle)
+    || `window=${normalizeText(projectStatus?.windowMinutes)}m  since=${normalizeText(projectStatus?.since)}`;
+  return renderSystemStatusSvg(projectStatus, { ...options, title, subtitle });
+}
+
+export function renderRunStatusSvg(runSnapshot, options = {}) {
+  const runId = normalizeText(options?.runId);
+  const task = normalizeText(options?.task);
+  const title = task
+    ? `ForgeOps Run: ${runId} · ${task.slice(0, 54)}`
+    : (runId ? `ForgeOps Run: ${runId}` : "ForgeOps Run");
+  const subtitle = normalizeText(options?.subtitle) || `now=${normalizeText(runSnapshot?.now)}`;
+
+  // Shape it to the same input contract as renderSystemStatusSvg for reuse.
+  const shaped = {
+    now: runSnapshot?.now,
+    windowMinutes: runSnapshot?.windowMinutes ?? 0,
+    since: runSnapshot?.since ?? "",
+    projects: {
+      total: 0,
+      active: 0,
+      byProductType: {},
+    },
+    runsByStatus: runSnapshot?.runsByStatus ?? {},
+    stepsByStatus: runSnapshot?.stepsByStatus ?? {},
+    sessionsByStatus: runSnapshot?.sessionsByStatus ?? {},
+    queue: runSnapshot?.queue ?? {},
+    events: runSnapshot?.events ?? { windowMinutes: 0, since: "", total: 0, byTypeTop: {} },
+    tokens: runSnapshot?.tokens ?? { windowMinutes: 0, since: "", sessions: 0, input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 },
+  };
+
+  return renderSystemStatusSvg(shaped, { ...options, title, subtitle });
+}
+
+export function renderSessionStatusSvg(sessionSnapshot, options = {}) {
+  const sessionId = normalizeText(options?.sessionId);
+  const stepKey = normalizeText(options?.stepKey);
+  const agentId = normalizeText(options?.agentId);
+  const title = `ForgeOps Session: ${sessionId}`;
+  const subtitle = `${stepKey || "-"} (${agentId || "-"}) · status=${normalizeText(sessionSnapshot?.status) || "-"}`;
+
+  const tokens = sessionSnapshot?.tokens && typeof sessionSnapshot.tokens === "object"
+    ? sessionSnapshot.tokens
+    : {};
+
+  const shaped = {
+    now: sessionSnapshot?.now,
+    windowMinutes: sessionSnapshot?.windowMinutes ?? 0,
+    since: sessionSnapshot?.since ?? "",
+    projects: {
+      total: 0,
+      active: 0,
+      byProductType: {},
+    },
+    runsByStatus: { current: 1 },
+    stepsByStatus: { [stepKey || "step"]: 1 },
+    sessionsByStatus: { [normalizeText(sessionSnapshot?.status) || "unknown"]: 1 },
+    queue: {},
+    events: { windowMinutes: 0, since: "", total: 0, byTypeTop: {} },
+    tokens: {
+      windowMinutes: 0,
+      since: "",
+      sessions: 1,
+      input: toNumber(tokens.input, 0),
+      cachedInput: toNumber(tokens.cachedInput, 0),
+      output: toNumber(tokens.output, 0),
+      reasoningOutput: toNumber(tokens.reasoningOutput, 0),
+      total: toNumber(tokens.total, 0),
+    },
+  };
+
+  return renderSystemStatusSvg(shaped, { ...options, title, subtitle });
+}

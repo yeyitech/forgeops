@@ -5607,6 +5607,180 @@ export class ForgeOpsStore {
     };
   }
 
+  getProjectStatus(projectId, options = {}) {
+    const pid = String(projectId ?? "").trim();
+    if (!pid) {
+      return this.getSystemStatus(options);
+    }
+    const project = this.getProject(pid);
+    if (!project) {
+      return {
+        now: nowIso(),
+        windowMinutes: 60,
+        since: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        projects: { total: 0, active: 0, byProductType: {} },
+        runsByStatus: {},
+        stepsByStatus: {},
+        sessionsByStatus: {},
+        queue: { waiting: 0, pending: 0, running: 0, failed: 0 },
+        events: { windowMinutes: 60, since: new Date(Date.now() - 60 * 60 * 1000).toISOString(), total: 0, byTypeTop: {} },
+        tokens: { windowMinutes: 60, since: new Date(Date.now() - 60 * 60 * 1000).toISOString(), sessions: 0, input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 },
+        error: `Project not found: ${pid}`,
+      };
+    }
+
+    const windowMinutesRaw = Number(options.windowMinutes ?? options.windowMins ?? 60);
+    const windowMinutes = Number.isFinite(windowMinutesRaw) && windowMinutesRaw > 0
+      ? Math.min(24 * 60, Math.floor(windowMinutesRaw))
+      : 60;
+    const sinceIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+
+    const scalar = (sql, ...params) => {
+      const row = this.db.prepare(sql).get(...params);
+      return Number(row?.count ?? 0) || 0;
+    };
+
+    const group = (sql, ...params) => {
+      const rows = this.db.prepare(sql).all(...params);
+      const out = {};
+      for (const row of rows) {
+        const key = String(row?.key ?? "").trim() || "unknown";
+        out[key] = Number(row?.count ?? 0) || 0;
+      }
+      return out;
+    };
+
+    const projects = {
+      total: 1,
+      active: project.status === "active" ? 1 : 0,
+      byProductType: {
+        [String(project.product_type ?? "").trim() || "unknown"]: 1,
+      },
+    };
+
+    const runsByStatus = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM runs WHERE project_id = ? GROUP BY key ORDER BY count DESC",
+      pid
+    );
+
+    const stepsByStatus = group(
+      `SELECT COALESCE(NULLIF(TRIM(s.status), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM steps s
+       JOIN runs r ON r.id = s.run_id
+       WHERE r.project_id = ?
+       GROUP BY key
+       ORDER BY count DESC`,
+      pid
+    );
+
+    const sessionsByStatus = group(
+      `SELECT COALESCE(NULLIF(TRIM(se.status), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM sessions se
+       JOIN runs r ON r.id = se.run_id
+       WHERE r.project_id = ?
+       GROUP BY key
+       ORDER BY count DESC`,
+      pid
+    );
+
+    const queue = {
+      waiting: scalar(
+        `SELECT COUNT(*) AS count
+         FROM steps s
+         JOIN runs r ON r.id = s.run_id
+         WHERE r.project_id = ? AND s.status = 'waiting'`,
+        pid
+      ),
+      pending: scalar(
+        `SELECT COUNT(*) AS count
+         FROM steps s
+         JOIN runs r ON r.id = s.run_id
+         WHERE r.project_id = ? AND s.status = 'pending'`,
+        pid
+      ),
+      running: scalar(
+        `SELECT COUNT(*) AS count
+         FROM steps s
+         JOIN runs r ON r.id = s.run_id
+         WHERE r.project_id = ? AND s.status = 'running'`,
+        pid
+      ),
+      failed: scalar(
+        `SELECT COUNT(*) AS count
+         FROM steps s
+         JOIN runs r ON r.id = s.run_id
+         WHERE r.project_id = ? AND s.status = 'failed'`,
+        pid
+      ),
+    };
+
+    const eventWindowTotal = scalar(
+      `SELECT COUNT(*) AS count
+       FROM events e
+       JOIN runs r ON r.id = e.run_id
+       WHERE r.project_id = ? AND e.ts >= ?`,
+      pid,
+      sinceIso
+    );
+    const eventWindowByType = group(
+      `SELECT e.event_type AS key, COUNT(*) AS count
+       FROM events e
+       JOIN runs r ON r.id = e.run_id
+       WHERE r.project_id = ? AND e.ts >= ?
+       GROUP BY e.event_type
+       ORDER BY count DESC
+       LIMIT 16`,
+      pid,
+      sinceIso
+    );
+
+    const tokenWindowRow = this.db.prepare(
+      `SELECT
+         COALESCE(SUM(se.token_input), 0) AS token_input,
+         COALESCE(SUM(se.token_cached_input), 0) AS token_cached_input,
+         COALESCE(SUM(se.token_output), 0) AS token_output,
+         COALESCE(SUM(se.token_reasoning_output), 0) AS token_reasoning_output,
+         COUNT(*) AS session_count
+       FROM sessions se
+       JOIN runs r ON r.id = se.run_id
+       WHERE r.project_id = ? AND se.started_at >= ?`
+    ).get(pid, sinceIso) ?? {};
+    const tokens = {
+      windowMinutes,
+      since: sinceIso,
+      sessions: Number(tokenWindowRow.session_count ?? 0) || 0,
+      input: Number(tokenWindowRow.token_input ?? 0) || 0,
+      cachedInput: Number(tokenWindowRow.token_cached_input ?? 0) || 0,
+      output: Number(tokenWindowRow.token_output ?? 0) || 0,
+      reasoningOutput: Number(tokenWindowRow.token_reasoning_output ?? 0) || 0,
+    };
+    tokens.total = tokens.input + tokens.cachedInput + tokens.output + tokens.reasoningOutput;
+
+    return {
+      now: nowIso(),
+      windowMinutes,
+      since: sinceIso,
+      project: {
+        id: project.id,
+        name: project.name,
+        rootPath: project.root_path,
+        productType: project.product_type,
+      },
+      projects,
+      runsByStatus,
+      stepsByStatus,
+      sessionsByStatus,
+      queue,
+      events: {
+        windowMinutes,
+        since: sinceIso,
+        total: eventWindowTotal,
+        byTypeTop: eventWindowByType,
+      },
+      tokens,
+    };
+  }
+
   claimNextPendingStep() {
     const candidate = this.db
       .prepare(

@@ -289,6 +289,16 @@ export function createServerApp(params) {
         return;
       }
 
+      const projectStatusMatch = pathname.match(/^\/api\/projects\/([^/]+)\/status$/);
+      if (projectStatusMatch && method === "GET") {
+        const projectId = decodeURIComponent(projectStatusMatch[1]);
+        const windowMinutes = Number(parsedUrl.searchParams.get("windowMinutes") ?? "60") || 60;
+        sendJson(res, 200, {
+          data: store.getProjectStatus(projectId, { windowMinutes }),
+        });
+        return;
+      }
+
       if (method === "GET" && pathname === "/api/system/token-usage") {
         sendJson(res, 200, {
           data: store.getGlobalTokenUsageMetrics({ trendDays: 7 }),

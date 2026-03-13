@@ -154,6 +154,16 @@ forgeops status
 forgeops status --chart svg --out ./forgeops-status.svg
 ```
 
+按不同粒度生成状态图（默认写入 `~/.forgeops/charts/`）：
+
+```bash
+forgeops chart system
+forgeops chart project <projectId>
+forgeops chart run <runId>
+forgeops chart run <runId> --step implement
+forgeops chart session <sessionId>
+```
+
 ### Issue / Run
 
 ```bash
