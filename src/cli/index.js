@@ -13,6 +13,8 @@ import { initProjectScaffold } from "../core/project-init.js";
 import { resolveRunAttachContext } from "../core/run-attach.js";
 import { findCodexSessionJsonlForThread, readTailTextFile, resolveManagedCodexHome } from "../core/codex-session-log.js";
 import { renderProjectStatusSvg, renderRunStatusSvg, renderSessionStatusSvg, renderSystemStatusSvg } from "../core/status-chart.js";
+import { renderProjectStatusHtml, renderSystemStatusHtml } from "../core/status-card-html.js";
+import { renderHtmlToPngWithChrome } from "../core/html-to-image.js";
 import {
   getForgeOpsServiceInfo,
   installForgeOpsService,
@@ -48,8 +50,8 @@ function printUsage() {
       "forgeops start [--port 4173] [--host 127.0.0.1] [--poll-ms 1500] [--concurrency 2]",
       "forgeops status [--window-minutes 60] [--json]  # control-plane status (runs/steps/sessions/events/tokens)",
       "forgeops status [--window-minutes 60] --chart svg [--out PATH | --stdout]  # generate chart (SVG)",
-      "forgeops chart system [--window-minutes 60] [--out PATH] [--json]  # writes SVG under runtime charts dir by default",
-      "forgeops chart project <projectId> [--window-minutes 60] [--out PATH] [--json]",
+      "forgeops chart system [--window-minutes 60] [--format svg|html|png] [--out PATH] [--json]  # writes under runtime charts dir by default",
+      "forgeops chart project <projectId> [--window-minutes 60] [--format svg|html|png] [--out PATH] [--json]",
       "forgeops chart run <runId> ... [--experimental]  # not enabled by default",
       "forgeops chart session <sessionId> ... [--experimental]  # not enabled by default",
       "forgeops env set system KEY=VALUE [--secret|--plain]",
@@ -706,13 +708,19 @@ function resolveDefaultChartPath(scope, id = "") {
   ensureDir(base);
   const suffix = isoFileSafeNow();
   const safeId = String(id ?? "").trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-  const name = safeId ? `${scope}-${safeId}-${suffix}.svg` : `${scope}-${suffix}.svg`;
+  const ext = String(arguments[2] ?? "svg").trim().replace(/^\./, "") || "svg";
+  const name = safeId ? `${scope}-${safeId}-${suffix}.${ext}` : `${scope}-${suffix}.${ext}`;
   return path.join(base, name);
 }
 
 function writeChartOutput(svg, outPath) {
   ensureDir(path.dirname(outPath));
   fs.writeFileSync(outPath, svg, "utf8");
+}
+
+function writeTextOutput(text, outPath) {
+  ensureDir(path.dirname(outPath));
+  fs.writeFileSync(outPath, String(text ?? ""), "utf8");
 }
 
 async function commandRun(store, args) {
@@ -2557,6 +2565,7 @@ async function commandChart(store, args) {
   const scope = String(args[0] ?? "").trim().toLowerCase();
   const asJson = args.includes("--json");
   const outFlag = String(getFlag(args, "--out", "") ?? "").trim();
+  const format = String(getFlag(args, "--format", "svg") ?? "svg").trim().toLowerCase();
   const experimental = args.includes("--experimental") || String(process.env.FORGEOPS_CHART_EXPERIMENTAL ?? "").trim() === "1";
 
   if (!scope || scope === "help" || scope === "--help" || scope === "-h") {
@@ -2566,15 +2575,43 @@ async function commandChart(store, args) {
   if (scope === "system") {
     const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
     const status = store.getSystemStatus({ windowMinutes });
-    const outPath = path.resolve(outFlag || resolveDefaultChartPath("system"));
-    const svg = renderSystemStatusSvg(status, { title: "ForgeOps System Status" });
-    writeChartOutput(svg, outPath);
-    if (asJson) {
-      process.stdout.write(`${JSON.stringify({ scope: "system", windowMinutes, path: outPath }, null, 2)}\n`);
+    if (format === "svg") {
+      const outPath = path.resolve(outFlag || resolveDefaultChartPath("system", "", "svg"));
+      const svg = renderSystemStatusSvg(status, { title: "ForgeOps System Status" });
+      writeChartOutput(svg, outPath);
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "system", windowMinutes, format: "svg", path: outPath }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`Wrote chart: ${outPath}\n`);
       return;
     }
-    process.stdout.write(`Wrote chart: ${outPath}\n`);
-    return;
+    if (format === "html") {
+      const outPath = path.resolve(outFlag || resolveDefaultChartPath("system", "", "html"));
+      const html = renderSystemStatusHtml(status, { title: "ForgeOps System Status" });
+      writeTextOutput(html, outPath);
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "system", windowMinutes, format: "html", path: outPath }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`Wrote chart: ${outPath}\n`);
+      return;
+    }
+    if (format === "png") {
+      const outPath = path.resolve(outFlag || resolveDefaultChartPath("system", "", "png"));
+      const html = renderSystemStatusHtml(status, { title: "ForgeOps System Status" });
+      const result = renderHtmlToPngWithChrome({ html, outPath, width: 1100, height: 760 });
+      if (!result.ok) {
+        fail(`PNG render failed: ${result.error} ${result.detail || ""}`.trim());
+      }
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "system", windowMinutes, format: "png", path: result.outPath, htmlPath: result.htmlPath }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`Wrote chart: ${result.outPath}\n`);
+      return;
+    }
+    fail("--format must be one of: svg, html, png");
   }
 
   if (scope === "project") {
@@ -2583,15 +2620,43 @@ async function commandChart(store, args) {
     const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
     const status = store.getProjectStatus(projectId, { windowMinutes });
     const projectName = String(status?.project?.name ?? "").trim();
-    const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId));
-    const svg = renderProjectStatusSvg(status, { projectId, projectName });
-    writeChartOutput(svg, outPath);
-    if (asJson) {
-      process.stdout.write(`${JSON.stringify({ scope: "project", projectId, windowMinutes, path: outPath }, null, 2)}\n`);
+    if (format === "svg") {
+      const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId, "svg"));
+      const svg = renderProjectStatusSvg(status, { projectId, projectName });
+      writeChartOutput(svg, outPath);
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "project", projectId, windowMinutes, format: "svg", path: outPath }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`Wrote chart: ${outPath}\n`);
       return;
     }
-    process.stdout.write(`Wrote chart: ${outPath}\n`);
-    return;
+    if (format === "html") {
+      const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId, "html"));
+      const html = renderProjectStatusHtml(status, { projectId, projectName });
+      writeTextOutput(html, outPath);
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "project", projectId, windowMinutes, format: "html", path: outPath }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`Wrote chart: ${outPath}\n`);
+      return;
+    }
+    if (format === "png") {
+      const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId, "png"));
+      const html = renderProjectStatusHtml(status, { projectId, projectName });
+      const result = renderHtmlToPngWithChrome({ html, outPath, width: 1100, height: 760 });
+      if (!result.ok) {
+        fail(`PNG render failed: ${result.error} ${result.detail || ""}`.trim());
+      }
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ scope: "project", projectId, windowMinutes, format: "png", path: result.outPath, htmlPath: result.htmlPath }, null, 2)}\n`);
+        return;
+      }
+      process.stdout.write(`Wrote chart: ${result.outPath}\n`);
+      return;
+    }
+    fail("--format must be one of: svg, html, png");
   }
 
   if (scope === "run") {
