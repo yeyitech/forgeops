@@ -5855,6 +5855,26 @@ export class ForgeOpsStore {
       "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM sessions GROUP BY key ORDER BY count DESC"
     );
 
+    const runsByStatusWindow = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM runs WHERE updated_at >= ? GROUP BY key ORDER BY count DESC",
+      sinceIso
+    );
+
+    const stepWindowTsExpr = "COALESCE(NULLIF(TRIM(ended_at), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))";
+    const stepsByStatusWindow = group(
+      `SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM steps
+       WHERE ${stepWindowTsExpr} >= ?
+       GROUP BY key
+       ORDER BY count DESC`,
+      sinceIso
+    );
+
+    const sessionsByStatusWindow = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM sessions WHERE started_at >= ? GROUP BY key ORDER BY count DESC",
+      sinceIso
+    );
+
     const queue = {
       waiting: scalar("SELECT COUNT(*) AS count FROM steps WHERE status = 'waiting'"),
       pending: scalar("SELECT COUNT(*) AS count FROM steps WHERE status = 'pending'"),
@@ -5897,6 +5917,40 @@ export class ForgeOpsStore {
     };
     tokenWindow.total = tokenWindow.input + tokenWindow.cachedInput + tokenWindow.output + tokenWindow.reasoningOutput;
 
+    const topFailedStepsByKey = group(
+      `SELECT COALESCE(NULLIF(TRIM(step_key), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM steps
+       WHERE status = 'failed' AND ${stepWindowTsExpr} >= ?
+       GROUP BY key
+       ORDER BY count DESC
+       LIMIT 12`,
+      sinceIso
+    );
+
+    const tokensByStepKey = group(
+      `SELECT COALESCE(NULLIF(TRIM(st.step_key), ''), 'unknown') AS key,
+              COALESCE(SUM(se.token_input + se.token_cached_input + se.token_output + se.token_reasoning_output), 0) AS count
+       FROM sessions se
+       JOIN steps st ON st.id = se.step_id
+       WHERE se.started_at >= ?
+       GROUP BY key
+       ORDER BY count DESC
+       LIMIT 12`,
+      sinceIso
+    );
+
+    const sessionsByAgent = group(
+      `SELECT COALESCE(NULLIF(TRIM(st.agent_id), ''), 'unknown') AS key,
+              COUNT(*) AS count
+       FROM sessions se
+       JOIN steps st ON st.id = se.step_id
+       WHERE se.started_at >= ?
+       GROUP BY key
+       ORDER BY count DESC
+       LIMIT 10`,
+      sinceIso
+    );
+
     return {
       now: nowIso(),
       windowMinutes,
@@ -5905,6 +5959,9 @@ export class ForgeOpsStore {
       runsByStatus,
       stepsByStatus,
       sessionsByStatus,
+      runsByStatusWindow,
+      stepsByStatusWindow,
+      sessionsByStatusWindow,
       queue,
       events: {
         windowMinutes,
@@ -5913,6 +5970,9 @@ export class ForgeOpsStore {
         byTypeTop: eventWindowByType,
       },
       tokens: tokenWindow,
+      topFailedStepsByKey,
+      tokensByStepKey,
+      sessionsByAgent,
     };
   }
 
@@ -5972,6 +6032,13 @@ export class ForgeOpsStore {
       pid
     );
 
+    const runsByStatusWindow = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM runs WHERE project_id = ? AND updated_at >= ? GROUP BY key ORDER BY count DESC",
+      pid,
+      sinceIso
+    );
+
+    const stepWindowTsExpr = "COALESCE(NULLIF(TRIM(s.ended_at), ''), NULLIF(TRIM(s.updated_at), ''), NULLIF(TRIM(s.created_at), ''))";
     const stepsByStatus = group(
       `SELECT COALESCE(NULLIF(TRIM(s.status), ''), 'unknown') AS key, COUNT(*) AS count
        FROM steps s
@@ -5982,6 +6049,17 @@ export class ForgeOpsStore {
       pid
     );
 
+    const stepsByStatusWindow = group(
+      `SELECT COALESCE(NULLIF(TRIM(s.status), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM steps s
+       JOIN runs r ON r.id = s.run_id
+       WHERE r.project_id = ? AND ${stepWindowTsExpr} >= ?
+       GROUP BY key
+       ORDER BY count DESC`,
+      pid,
+      sinceIso
+    );
+
     const sessionsByStatus = group(
       `SELECT COALESCE(NULLIF(TRIM(se.status), ''), 'unknown') AS key, COUNT(*) AS count
        FROM sessions se
@@ -5990,6 +6068,17 @@ export class ForgeOpsStore {
        GROUP BY key
        ORDER BY count DESC`,
       pid
+    );
+
+    const sessionsByStatusWindow = group(
+      `SELECT COALESCE(NULLIF(TRIM(se.status), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM sessions se
+       JOIN runs r ON r.id = se.run_id
+       WHERE r.project_id = ? AND se.started_at >= ?
+       GROUP BY key
+       ORDER BY count DESC`,
+      pid,
+      sinceIso
     );
 
     const queue = {
@@ -6065,6 +6154,46 @@ export class ForgeOpsStore {
     };
     tokens.total = tokens.input + tokens.cachedInput + tokens.output + tokens.reasoningOutput;
 
+    const topFailedStepsByKey = group(
+      `SELECT COALESCE(NULLIF(TRIM(s.step_key), ''), 'unknown') AS key, COUNT(*) AS count
+       FROM steps s
+       JOIN runs r ON r.id = s.run_id
+       WHERE r.project_id = ? AND s.status = 'failed' AND ${stepWindowTsExpr} >= ?
+       GROUP BY key
+       ORDER BY count DESC
+       LIMIT 12`,
+      pid,
+      sinceIso
+    );
+
+    const tokensByStepKey = group(
+      `SELECT COALESCE(NULLIF(TRIM(st.step_key), ''), 'unknown') AS key,
+              COALESCE(SUM(se.token_input + se.token_cached_input + se.token_output + se.token_reasoning_output), 0) AS count
+       FROM sessions se
+       JOIN steps st ON st.id = se.step_id
+       JOIN runs r ON r.id = se.run_id
+       WHERE r.project_id = ? AND se.started_at >= ?
+       GROUP BY key
+       ORDER BY count DESC
+       LIMIT 12`,
+      pid,
+      sinceIso
+    );
+
+    const sessionsByAgent = group(
+      `SELECT COALESCE(NULLIF(TRIM(st.agent_id), ''), 'unknown') AS key,
+              COUNT(*) AS count
+       FROM sessions se
+       JOIN steps st ON st.id = se.step_id
+       JOIN runs r ON r.id = se.run_id
+       WHERE r.project_id = ? AND se.started_at >= ?
+       GROUP BY key
+       ORDER BY count DESC
+       LIMIT 10`,
+      pid,
+      sinceIso
+    );
+
     return {
       now: nowIso(),
       windowMinutes,
@@ -6079,6 +6208,9 @@ export class ForgeOpsStore {
       runsByStatus,
       stepsByStatus,
       sessionsByStatus,
+      runsByStatusWindow,
+      stepsByStatusWindow,
+      sessionsByStatusWindow,
       queue,
       events: {
         windowMinutes,
@@ -6087,6 +6219,9 @@ export class ForgeOpsStore {
         byTypeTop: eventWindowByType,
       },
       tokens,
+      topFailedStepsByKey,
+      tokensByStepKey,
+      sessionsByAgent,
     };
   }
 

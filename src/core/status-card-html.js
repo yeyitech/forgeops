@@ -8,6 +8,13 @@ function toNumber(value, fallback = 0) {
   return n;
 }
 
+function clampInt(value, min, max) {
+  const n = Math.floor(toNumber(value, min));
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
 function formatInt(value) {
   const n = Math.floor(toNumber(value, 0));
   try {
@@ -51,10 +58,21 @@ function getCount(mapLike, key) {
   return toNumber(obj[key], 0);
 }
 
+function colorForStatusKey(key) {
+  const k = normalizeText(key).toLowerCase();
+  if (k === "failed" || k === "error") return "#ff5c5c";
+  if (k === "running") return "#60a5fa";
+  if (k === "pending" || k === "paused") return "#f59e0b";
+  if (k === "waiting") return "#a1a1aa";
+  if (k === "done" || k === "completed" || k === "success") return "#22c55e";
+  return "#a78bfa";
+}
+
 function buildBarsHtml(entries, options = {}) {
   const rows = Array.isArray(entries) ? entries : [];
   const maxRows = Math.max(1, Math.min(10, Math.floor(toNumber(options.maxRows, 7))));
   const labelMax = Math.max(8, Math.min(40, Math.floor(toNumber(options.labelMaxChars, 22))));
+  const colorByKey = options.colorByKey === true;
   const clipped = rows.slice(0, maxRows);
   const max = clipped.reduce((acc, row) => Math.max(acc, toNumber(row.value, 0)), 0) || 1;
   if (clipped.length === 0) {
@@ -64,10 +82,11 @@ function buildBarsHtml(entries, options = {}) {
     const key = truncateEnd(row.key, labelMax);
     const value = toNumber(row.value, 0);
     const pct = Math.max(0, Math.min(100, Math.round((value / max) * 100)));
+    const fillColor = colorByKey ? colorForStatusKey(row.key) : null;
     return [
       `<div class="barRow">`,
       `<div class="barLabel">${htmlEscape(key)}</div>`,
-      `<div class="barTrack"><div class="barFill" style="width:${pct}%;"></div></div>`,
+      `<div class="barTrack"><div class="barFill" style="width:${pct}%;${fillColor ? `background:${htmlEscape(fillColor)};` : ""}"></div></div>`,
       `<div class="barValue">${htmlEscape(formatInt(value))}</div>`,
       `</div>`,
     ].join("");
@@ -76,6 +95,9 @@ function buildBarsHtml(entries, options = {}) {
 
 function renderStatusCardHtml(status, options = {}) {
   const s = status && typeof status === "object" ? status : {};
+  const width = clampInt(options?.width ?? 1280, 960, 2000);
+  const height = clampInt(options?.height ?? 900, 640, 2000);
+
   const title = normalizeText(options.title) || "ForgeOps Status";
   const subtitle = normalizeText(options.subtitle) || `window=${normalizeText(s.windowMinutes)}m  since=${normalizeText(s.since)}`;
   const nowText = normalizeText(s.now) || new Date().toISOString();
@@ -84,7 +106,14 @@ function renderStatusCardHtml(status, options = {}) {
   const runsByStatus = entriesFromCountMap(s.runsByStatus);
   const stepsByStatus = entriesFromCountMap(s.stepsByStatus);
   const sessionsByStatus = entriesFromCountMap(s.sessionsByStatus);
-  const eventsTop = entriesFromCountMap(s?.events?.byTypeTop);
+  const runsByStatusWindow = entriesFromCountMap(s.runsByStatusWindow);
+  const stepsByStatusWindow = entriesFromCountMap(s.stepsByStatusWindow);
+  const sessionsByStatusWindow = entriesFromCountMap(s.sessionsByStatusWindow);
+
+  const topFailedStepsByKey = entriesFromCountMap(s.topFailedStepsByKey);
+  const tokensByStepKey = entriesFromCountMap(s.tokensByStepKey);
+  const sessionsByAgent = entriesFromCountMap(s.sessionsByAgent);
+
   const projectTypes = entriesFromCountMap(s?.projects?.byProductType);
 
   const projectsTotal = toNumber(s?.projects?.total, 0);
@@ -93,6 +122,15 @@ function renderStatusCardHtml(status, options = {}) {
   const totalRuns = sumEntries(runsByStatus);
   const totalSteps = sumEntries(stepsByStatus);
   const totalSessions = sumEntries(sessionsByStatus);
+
+  const windowRunsTotal = sumEntries(runsByStatusWindow);
+  const windowStepsTotal = sumEntries(stepsByStatusWindow);
+  const windowSessionsTotal = sumEntries(sessionsByStatusWindow);
+  const windowStepsDone = getCount(s.stepsByStatusWindow, "done") + getCount(s.stepsByStatusWindow, "completed");
+  const windowStepsFailed = getCount(s.stepsByStatusWindow, "failed");
+  const windowFailureRate = (windowStepsDone + windowStepsFailed) > 0
+    ? (windowStepsFailed / (windowStepsDone + windowStepsFailed)) * 100
+    : 0;
 
   const queue = s?.queue && typeof s.queue === "object" ? s.queue : {};
   const queueWaiting = toNumber(queue.waiting, 0);
@@ -113,6 +151,7 @@ function renderStatusCardHtml(status, options = {}) {
   const windowMinutes = toNumber(s.windowMinutes, 0);
 
   const typesInline = projectTypes.slice(0, 3).map((row) => `${row.key}:${formatInt(row.value)}`).join("  ");
+  const topFailInline = topFailedStepsByKey.slice(0, 2).map((row) => `${row.key}:${formatInt(row.value)}`).join("  ");
 
   const metaLine = meta
     ? [
@@ -120,7 +159,7 @@ function renderStatusCardHtml(status, options = {}) {
       meta.type ? `type=${normalizeText(meta.type)}` : "",
       meta.root ? `root=${truncateEnd(normalizeText(meta.root), 64)}` : "",
     ].filter(Boolean).join("  ")
-    : `events=${formatInt(eventsTotal)}  window=${formatInt(windowMinutes)}m`;
+    : `events=${formatInt(eventsTotal)}  window=${formatInt(windowMinutes)}m  topFail ${truncateEnd(topFailInline || "n/a", 40)}`;
 
   const kpi = [
     {
@@ -130,19 +169,31 @@ function renderStatusCardHtml(status, options = {}) {
       sub2: typesInline ? `types ${truncateEnd(typesInline, 34)}` : "types n/a",
     },
     {
-      title: "Runs",
-      big: formatInt(totalRuns),
-      sub1: `running=${formatInt(getCount(s.runsByStatus, "running"))} failed=${formatInt(getCount(s.runsByStatus, "failed"))}`,
-      sub2: `completed=${formatInt(getCount(s.runsByStatus, "completed"))}`,
+      title: `Runs (${formatInt(windowMinutes)}m)`,
+      big: formatInt(windowRunsTotal),
+      sub1: `running=${formatInt(getCount(s.runsByStatusWindow, "running"))} failed=${formatInt(getCount(s.runsByStatusWindow, "failed"))}`,
+      sub2: `total=${formatInt(totalRuns)}`,
     },
     {
-      title: "Queue",
+      title: `Steps (${formatInt(windowMinutes)}m)`,
+      big: formatInt(windowStepsTotal),
+      sub1: `done=${formatInt(windowStepsDone)} failed=${formatInt(windowStepsFailed)}`,
+      sub2: `failRate=${windowFailureRate.toFixed(1)}%`,
+    },
+    {
+      title: `Sessions (${formatInt(windowMinutes)}m)`,
+      big: formatInt(windowSessionsTotal),
+      sub1: `running=${formatInt(getCount(s.sessionsByStatusWindow, "running"))} failed=${formatInt(getCount(s.sessionsByStatusWindow, "failed"))}`,
+      sub2: `total=${formatInt(totalSessions)}`,
+    },
+    {
+      title: "Queue (now)",
       big: formatInt(queueWaiting),
       sub1: `pending=${formatInt(queuePending)} running=${formatInt(queueRunning)}`,
-      sub2: `failed=${formatInt(queueFailed)} steps=${formatInt(totalSteps)}`,
+      sub2: `failed=${formatInt(queueFailed)}`,
     },
     {
-      title: "Tokens (window)",
+      title: `Tokens (${formatInt(windowMinutes)}m)`,
       big: formatInt(tokenTotal),
       sub1: `sessions=${formatInt(tokenSessions)} cacheHit=${cacheHit.toFixed(1)}%`,
       sub2: `in=${formatInt(tokenIn)} cached=${formatInt(tokenCached)} out=${formatInt(tokenOut)}`,
@@ -186,24 +237,24 @@ function renderStatusCardHtml(status, options = {}) {
     `*{box-sizing:border-box}`,
     `html,body{height:100%}`,
     `body{margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; color:var(--text);}`,
-    `.frame{width:1100px; height:760px; padding:44px; background: radial-gradient(900px 520px at 12% 0%, rgba(167,139,250,.22), transparent 55%), radial-gradient(860px 520px at 78% 10%, rgba(96,165,250,.20), transparent 58%), linear-gradient(180deg,#171a23,#0f1117); position:relative; overflow:hidden;}`,
+    `.frame{width:${width}px; height:${height}px; padding:44px; background: radial-gradient(980px 560px at 12% 0%, rgba(167,139,250,.22), transparent 55%), radial-gradient(940px 560px at 78% 10%, rgba(96,165,250,.20), transparent 58%), linear-gradient(180deg,#171a23,#0f1117); position:relative; overflow:hidden;}`,
     `.grid{position:absolute; inset:0; background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 44px 44px; opacity:.10; pointer-events:none;}`,
     `.header{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; position:relative; z-index:1;}`,
     `.title{font-weight:750; font-size:24px; letter-spacing:.1px; line-height:1.1;}`,
     `.subtitle{margin-top:6px; font-size:12px; color:var(--muted);}`,
     `.meta{margin-top:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; color:var(--muted);}`,
     `.now{font-size:12px; color:var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; text-align:right; white-space:nowrap;}`,
-    `.kpis{display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin-top:26px; position:relative; z-index:1;}`,
+    `.kpis{display:grid; grid-template-columns: repeat(6, 1fr); gap:12px; margin-top:22px; position:relative; z-index:1;}`,
     `.tile{background:var(--panel); border:1px solid var(--stroke); border-radius:14px; box-shadow: var(--shadow); padding:14px 16px; min-height:92px;}`,
     `.tileTitle{font-weight:650; font-size:12px; color:rgba(244,244,245,.92); letter-spacing:.2px;}`,
     `.tileBig{margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-weight:760; font-size:22px;}`,
     `.tileSub{margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; color:var(--muted);}`,
-    `.panels{display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:16px; position:relative; z-index:1;}`,
-    `.panel{background:var(--panel); border:1px solid var(--stroke); border-radius:14px; box-shadow: var(--shadow); padding:16px 16px 14px; min-height:235px;}`,
+    `.panels{display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-top:12px; position:relative; z-index:1;}`,
+    `.panel{background:var(--panel); border:1px solid var(--stroke); border-radius:14px; box-shadow: var(--shadow); padding:14px 14px 12px; min-height:250px;}`,
     `.panelHeader{display:flex; align-items:baseline; justify-content:space-between; gap:12px;}`,
     `.panelTitle{font-weight:700; font-size:13px; color:rgba(244,244,245,.92); letter-spacing:.2px;}`,
     `.panelHint{font-size:12px; color:var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}`,
-    `.barRow{display:grid; grid-template-columns: 210px 1fr 72px; gap:12px; align-items:center; margin-top:10px;}`,
+    `.barRow{display:grid; grid-template-columns: 160px 1fr 64px; gap:10px; align-items:center; margin-top:10px;}`,
     `.barLabel{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; color:rgba(244,244,245,.88); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}`,
     `.barTrack{height:12px; background:var(--barTrack); border-radius:8px; overflow:hidden;}`,
     `.barFill{height:100%; background:var(--barFill); border-radius:8px;}`,
@@ -234,20 +285,34 @@ function renderStatusCardHtml(status, options = {}) {
     `</section>`,
     `<section class="panels">`,
     panel(
-      `Runs By Status (total ${formatInt(totalRuns)})`,
-      `<div style="--barFill:#ff5c5c">${buildBarsHtml(runsByStatus, { maxRows: 7, labelMaxChars: 22 })}</div>`
+      `Runs By Status (${formatInt(windowMinutes)}m)`,
+      `<div>${buildBarsHtml(runsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+      `total=${formatInt(totalRuns)}`
     ),
     panel(
-      `Steps By Status (total ${formatInt(totalSteps)})`,
-      `<div style="--barFill:#22c55e">${buildBarsHtml(stepsByStatus, { maxRows: 7, labelMaxChars: 22 })}</div>`
+      `Steps By Status (${formatInt(windowMinutes)}m)`,
+      `<div>${buildBarsHtml(stepsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+      `total=${formatInt(totalSteps)}`
     ),
     panel(
-      `Sessions By Status (total ${formatInt(totalSessions)})`,
-      `<div style="--barFill:#f59e0b">${buildBarsHtml(sessionsByStatus, { maxRows: 7, labelMaxChars: 22 })}</div>`
+      `Sessions By Status (${formatInt(windowMinutes)}m)`,
+      `<div>${buildBarsHtml(sessionsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+      `total=${formatInt(totalSessions)}`
     ),
     panel(
-      `Top Event Types (total ${formatInt(eventsTotal)})`,
-      `<div style="--barFill:#60a5fa">${buildBarsHtml(eventsTop, { maxRows: 7, labelMaxChars: 28 })}</div>`
+      `Top Failing Steps (${formatInt(windowMinutes)}m)`,
+      `<div style="--barFill:#ff5c5c">${buildBarsHtml(topFailedStepsByKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
+      `failed=${formatInt(windowStepsFailed)}`
+    ),
+    panel(
+      `Tokens By Step (${formatInt(windowMinutes)}m)`,
+      `<div style="--barFill:#22c55e">${buildBarsHtml(tokensByStepKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
+      `total=${formatInt(tokenTotal)}`
+    ),
+    panel(
+      `Sessions By Agent (${formatInt(windowMinutes)}m)`,
+      `<div style="--barFill:#60a5fa">${buildBarsHtml(sessionsByAgent, { maxRows: 7, labelMaxChars: 18 })}</div>`,
+      `sessions=${formatInt(windowSessionsTotal)}`
     ),
     `</section>`,
     `</div>`,
@@ -263,6 +328,8 @@ export function renderSystemStatusHtml(status, options = {}) {
   return renderStatusCardHtml(status, {
     title,
     subtitle: normalizeText(options?.subtitle) || "",
+    width: options?.width,
+    height: options?.height,
   });
 }
 
@@ -282,6 +349,7 @@ export function renderProjectStatusHtml(projectStatus, options = {}) {
           root: project?.rootPath,
         }
       : null,
+    width: options?.width,
+    height: options?.height,
   });
 }
-

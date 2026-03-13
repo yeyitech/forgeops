@@ -50,8 +50,8 @@ function printUsage() {
       "forgeops start [--port 4173] [--host 127.0.0.1] [--poll-ms 1500] [--concurrency 2]",
       "forgeops status [--window-minutes 60] [--json]  # control-plane status (runs/steps/sessions/events/tokens)",
       "forgeops status [--window-minutes 60] --chart svg [--out PATH | --stdout]  # generate chart (SVG)",
-      "forgeops chart system [--window-minutes 60] [--format svg|html|png] [--out PATH] [--json]  # writes under runtime charts dir by default",
-      "forgeops chart project <projectId> [--window-minutes 60] [--format svg|html|png] [--out PATH] [--json]",
+      "forgeops chart system [--window-minutes 60] [--format svg|html|png] [--width 1280] [--height 900] [--out PATH] [--json]  # writes under runtime charts dir by default",
+      "forgeops chart project <projectId> [--window-minutes 60] [--format svg|html|png] [--width 1280] [--height 900] [--out PATH] [--json]",
       "forgeops chart run <runId> ... [--experimental]  # not enabled by default",
       "forgeops chart session <sessionId> ... [--experimental]  # not enabled by default",
       "forgeops env set system KEY=VALUE [--secret|--plain]",
@@ -2567,6 +2567,10 @@ async function commandChart(store, args) {
   const outFlag = String(getFlag(args, "--out", "") ?? "").trim();
   const format = String(getFlag(args, "--format", "svg") ?? "svg").trim().toLowerCase();
   const experimental = args.includes("--experimental") || String(process.env.FORGEOPS_CHART_EXPERIMENTAL ?? "").trim() === "1";
+  const widthFlag = Number(getFlag(args, "--width", "") ?? "");
+  const heightFlag = Number(getFlag(args, "--height", "") ?? "");
+  const cardWidth = Number.isFinite(widthFlag) && widthFlag > 0 ? Math.floor(widthFlag) : 1280;
+  const cardHeight = Number.isFinite(heightFlag) && heightFlag > 0 ? Math.floor(heightFlag) : 900;
 
   if (!scope || scope === "help" || scope === "--help" || scope === "-h") {
     fail("Usage: forgeops chart system|project|run|session ...");
@@ -2588,7 +2592,7 @@ async function commandChart(store, args) {
     }
     if (format === "html") {
       const outPath = path.resolve(outFlag || resolveDefaultChartPath("system", "", "html"));
-      const html = renderSystemStatusHtml(status, { title: "ForgeOps System Status" });
+      const html = renderSystemStatusHtml(status, { title: "ForgeOps System Status", width: cardWidth, height: cardHeight });
       writeTextOutput(html, outPath);
       if (asJson) {
         process.stdout.write(`${JSON.stringify({ scope: "system", windowMinutes, format: "html", path: outPath }, null, 2)}\n`);
@@ -2599,8 +2603,8 @@ async function commandChart(store, args) {
     }
     if (format === "png") {
       const outPath = path.resolve(outFlag || resolveDefaultChartPath("system", "", "png"));
-      const html = renderSystemStatusHtml(status, { title: "ForgeOps System Status" });
-      const result = renderHtmlToPngWithChrome({ html, outPath, width: 1100, height: 760 });
+      const html = renderSystemStatusHtml(status, { title: "ForgeOps System Status", width: cardWidth, height: cardHeight });
+      const result = renderHtmlToPngWithChrome({ html, outPath, width: cardWidth, height: cardHeight });
       if (!result.ok) {
         fail(`PNG render failed: ${result.error} ${result.detail || ""}`.trim());
       }
@@ -2633,7 +2637,7 @@ async function commandChart(store, args) {
     }
     if (format === "html") {
       const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId, "html"));
-      const html = renderProjectStatusHtml(status, { projectId, projectName });
+      const html = renderProjectStatusHtml(status, { projectId, projectName, width: cardWidth, height: cardHeight });
       writeTextOutput(html, outPath);
       if (asJson) {
         process.stdout.write(`${JSON.stringify({ scope: "project", projectId, windowMinutes, format: "html", path: outPath }, null, 2)}\n`);
@@ -2644,8 +2648,8 @@ async function commandChart(store, args) {
     }
     if (format === "png") {
       const outPath = path.resolve(outFlag || resolveDefaultChartPath("project", projectId, "png"));
-      const html = renderProjectStatusHtml(status, { projectId, projectName });
-      const result = renderHtmlToPngWithChrome({ html, outPath, width: 1100, height: 760 });
+      const html = renderProjectStatusHtml(status, { projectId, projectName, width: cardWidth, height: cardHeight });
+      const result = renderHtmlToPngWithChrome({ html, outPath, width: cardWidth, height: cardHeight });
       if (!result.ok) {
         fail(`PNG render failed: ${result.error} ${result.detail || ""}`.trim());
       }
