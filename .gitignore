@@ -8,6 +8,7 @@ docs/.vitepress/dist/
 .agents/
 demo-project/
 _external/
+_tmp/
 *.log
 .DS_Store
 .forgeops/worktrees/
