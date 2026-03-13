@@ -45,6 +45,7 @@ function printUsage() {
       "ForgeOps CLI",
       "",
       "forgeops start [--port 4173] [--host 127.0.0.1] [--poll-ms 1500] [--concurrency 2]",
+      "forgeops status [--window-minutes 60] [--json]  # control-plane status (runs/steps/sessions/events/tokens)",
       "forgeops project init [--name NAME] [--type web|miniapp|ios|microservice|android|serverless|other] [--language LANG] [--frontend-stack STACK] [--backend-stack STACK] [--ci-provider NAME] [--problem TEXT] [--path DIR] [--github-repo OWNER/NAME] [--github-public|--github-private] [--branch-protection|--no-branch-protection] [--no-open-ui]  # default opens Dashboard",
       "forgeops project list",
       "forgeops project metrics <projectId> [--json]",
@@ -2322,6 +2323,77 @@ async function main() {
 
   const store = await createStoreInstance();
   try {
+    if (command === "status") {
+      const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
+      const asJson = args.includes("--json");
+      const status = store.getSystemStatus({ windowMinutes });
+
+      const tryServiceInfo = () => {
+        try {
+          const runtimeHome = String(getFlag(args, "--runtime-home", "") ?? "").trim();
+          return getForgeOpsServiceInfo(runtimeHome ? { runtimeHome } : {});
+        } catch {
+          return null;
+        }
+      };
+      const svc = tryServiceInfo();
+
+      if (asJson) {
+        process.stdout.write(`${JSON.stringify({ service: svc, status }, null, 2)}\n`);
+        return;
+      }
+
+      const formatBars = (obj) => {
+        const entries = Object.entries(obj ?? {}).map(([k, v]) => ({ k, v: Number(v) || 0 }));
+        entries.sort((a, b) => b.v - a.v);
+        const max = entries.reduce((acc, row) => Math.max(acc, row.v), 0) || 1;
+        const width = 22;
+        const lines = [];
+        for (const row of entries) {
+          const n = Math.max(0, Math.min(width, Math.round((row.v / max) * width)));
+          lines.push(`${String(row.k).padEnd(14)} ${"#".repeat(n).padEnd(width)} ${row.v}`);
+        }
+        return lines.join("\n");
+      };
+
+      process.stdout.write(`ForgeOps Status\n`);
+      process.stdout.write(`- now: ${status.now}\n`);
+      process.stdout.write(`- window: last ${status.windowMinutes}m (since ${status.since})\n`);
+      if (svc) {
+        process.stdout.write(`- service: platform=${svc.platform} installed=${svc.installed ? "yes" : "no"} running=${svc.running ? "yes" : "no"}\n`);
+        if (svc.endpoint) {
+          process.stdout.write(`- endpoint: ${svc.endpoint}\n`);
+        }
+      } else {
+        process.stdout.write(`- service: unavailable (use: forgeops service status)\n`);
+      }
+      process.stdout.write("\n");
+
+      process.stdout.write(`Projects: total=${status.projects.total} active=${status.projects.active}\n`);
+      process.stdout.write("Projects by type:\n");
+      process.stdout.write(`${formatBars(status.projects.byProductType)}\n\n`);
+
+      process.stdout.write("Runs by status:\n");
+      process.stdout.write(`${formatBars(status.runsByStatus)}\n\n`);
+
+      process.stdout.write("Steps by status:\n");
+      process.stdout.write(`${formatBars(status.stepsByStatus)}\n\n`);
+
+      process.stdout.write(`Queue snapshot: waiting=${status.queue.waiting} pending=${status.queue.pending} running=${status.queue.running} failed=${status.queue.failed}\n\n`);
+
+      process.stdout.write("Sessions by status:\n");
+      process.stdout.write(`${formatBars(status.sessionsByStatus)}\n\n`);
+
+      process.stdout.write(`Events (last ${status.events.windowMinutes}m): total=${status.events.total}\n`);
+      process.stdout.write("Top event types:\n");
+      process.stdout.write(`${formatBars(status.events.byTypeTop)}\n\n`);
+
+      process.stdout.write(
+        `Tokens (last ${status.tokens.windowMinutes}m): total=${status.tokens.total} (in=${status.tokens.input} cached=${status.tokens.cachedInput} out=${status.tokens.output} reasoning=${status.tokens.reasoningOutput}) sessions=${status.tokens.sessions}\n`
+      );
+      return;
+    }
+
     if (command === "project") {
       await commandProject(store, args.slice(1));
       return;

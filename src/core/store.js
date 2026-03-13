@@ -5506,6 +5506,107 @@ export class ForgeOpsStore {
     return row && typeof row === "object" ? row : null;
   }
 
+  getSystemStatus(options = {}) {
+    const windowMinutesRaw = Number(options.windowMinutes ?? options.windowMins ?? 60);
+    const windowMinutes = Number.isFinite(windowMinutesRaw) && windowMinutesRaw > 0
+      ? Math.min(24 * 60, Math.floor(windowMinutesRaw))
+      : 60;
+    const sinceIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+
+    const scalar = (sql, ...params) => {
+      const row = this.db.prepare(sql).get(...params);
+      return Number(row?.count ?? 0) || 0;
+    };
+
+    const group = (sql, ...params) => {
+      const rows = this.db.prepare(sql).all(...params);
+      const out = {};
+      for (const row of rows) {
+        const key = String(row?.key ?? "").trim() || "unknown";
+        out[key] = Number(row?.count ?? 0) || 0;
+      }
+      return out;
+    };
+
+    const projects = {
+      total: scalar("SELECT COUNT(*) AS count FROM projects"),
+      active: scalar("SELECT COUNT(*) AS count FROM projects WHERE status = 'active'"),
+      byProductType: group(
+        "SELECT COALESCE(NULLIF(TRIM(product_type), ''), 'unknown') AS key, COUNT(*) AS count FROM projects GROUP BY key ORDER BY count DESC"
+      ),
+    };
+
+    const runsByStatus = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM runs GROUP BY key ORDER BY count DESC"
+    );
+    const stepsByStatus = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM steps GROUP BY key ORDER BY count DESC"
+    );
+    const sessionsByStatus = group(
+      "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM sessions GROUP BY key ORDER BY count DESC"
+    );
+
+    const queue = {
+      waiting: scalar("SELECT COUNT(*) AS count FROM steps WHERE status = 'waiting'"),
+      pending: scalar("SELECT COUNT(*) AS count FROM steps WHERE status = 'pending'"),
+      running: scalar("SELECT COUNT(*) AS count FROM steps WHERE status = 'running'"),
+      failed: scalar("SELECT COUNT(*) AS count FROM steps WHERE status = 'failed'"),
+    };
+
+    const eventWindowTotal = scalar(
+      "SELECT COUNT(*) AS count FROM events WHERE ts >= ?",
+      sinceIso
+    );
+    const eventWindowByType = group(
+      `SELECT event_type AS key, COUNT(*) AS count
+       FROM events
+       WHERE ts >= ?
+       GROUP BY event_type
+       ORDER BY count DESC
+       LIMIT 16`,
+      sinceIso
+    );
+
+    const tokenWindowRow = this.db.prepare(
+      `SELECT
+         COALESCE(SUM(token_input), 0) AS token_input,
+         COALESCE(SUM(token_cached_input), 0) AS token_cached_input,
+         COALESCE(SUM(token_output), 0) AS token_output,
+         COALESCE(SUM(token_reasoning_output), 0) AS token_reasoning_output,
+         COUNT(*) AS session_count
+       FROM sessions
+       WHERE started_at >= ?`
+    ).get(sinceIso) ?? {};
+    const tokenWindow = {
+      windowMinutes,
+      since: sinceIso,
+      sessions: Number(tokenWindowRow.session_count ?? 0) || 0,
+      input: Number(tokenWindowRow.token_input ?? 0) || 0,
+      cachedInput: Number(tokenWindowRow.token_cached_input ?? 0) || 0,
+      output: Number(tokenWindowRow.token_output ?? 0) || 0,
+      reasoningOutput: Number(tokenWindowRow.token_reasoning_output ?? 0) || 0,
+    };
+    tokenWindow.total = tokenWindow.input + tokenWindow.cachedInput + tokenWindow.output + tokenWindow.reasoningOutput;
+
+    return {
+      now: nowIso(),
+      windowMinutes,
+      since: sinceIso,
+      projects,
+      runsByStatus,
+      stepsByStatus,
+      sessionsByStatus,
+      queue,
+      events: {
+        windowMinutes,
+        since: sinceIso,
+        total: eventWindowTotal,
+        byTypeTop: eventWindowByType,
+      },
+      tokens: tokenWindow,
+    };
+  }
+
   claimNextPendingStep() {
     const candidate = this.db
       .prepare(

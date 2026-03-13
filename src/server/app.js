@@ -281,6 +281,14 @@ export function createServerApp(params) {
         return;
       }
 
+      if (method === "GET" && pathname === "/api/system/status") {
+        const windowMinutes = Number(parsedUrl.searchParams.get("windowMinutes") ?? "60") || 60;
+        sendJson(res, 200, {
+          data: store.getSystemStatus({ windowMinutes }),
+        });
+        return;
+      }
+
       if (method === "GET" && pathname === "/api/system/token-usage") {
         sendJson(res, 200, {
           data: store.getGlobalTokenUsageMetrics({ trendDays: 7 }),

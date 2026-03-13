@@ -145,6 +145,7 @@ forgeops project list
 forgeops project metrics <projectId>
 forgeops workflow show <projectId>
 forgeops scheduler show <projectId>
+forgeops status
 ```
 
 ### Issue / Run
