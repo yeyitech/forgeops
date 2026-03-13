@@ -12,6 +12,7 @@ import { normalizeProductType } from "../core/product-type.js";
 import { initProjectScaffold } from "../core/project-init.js";
 import { resolveRunAttachContext } from "../core/run-attach.js";
 import { findCodexSessionJsonlForThread, readTailTextFile, resolveManagedCodexHome } from "../core/codex-session-log.js";
+import { renderSystemStatusSvg } from "../core/status-chart.js";
 import {
   getForgeOpsServiceInfo,
   installForgeOpsService,
@@ -46,6 +47,7 @@ function printUsage() {
       "",
       "forgeops start [--port 4173] [--host 127.0.0.1] [--poll-ms 1500] [--concurrency 2]",
       "forgeops status [--window-minutes 60] [--json]  # control-plane status (runs/steps/sessions/events/tokens)",
+      "forgeops status [--window-minutes 60] --chart svg [--out PATH | --stdout]  # generate chart (SVG)",
       "forgeops project init [--name NAME] [--type web|miniapp|ios|microservice|android|serverless|other] [--language LANG] [--frontend-stack STACK] [--backend-stack STACK] [--ci-provider NAME] [--problem TEXT] [--path DIR] [--github-repo OWNER/NAME] [--github-public|--github-private] [--branch-protection|--no-branch-protection] [--no-open-ui]  # default opens Dashboard",
       "forgeops project list",
       "forgeops project metrics <projectId> [--json]",
@@ -2326,6 +2328,9 @@ async function main() {
     if (command === "status") {
       const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
       const asJson = args.includes("--json");
+      const chart = String(getFlag(args, "--chart", "") ?? "").trim().toLowerCase();
+      const chartStdout = args.includes("--stdout");
+      const outFlag = String(getFlag(args, "--out", "") ?? "").trim();
       const status = store.getSystemStatus({ windowMinutes });
 
       const tryServiceInfo = () => {
@@ -2340,6 +2345,26 @@ async function main() {
 
       if (asJson) {
         process.stdout.write(`${JSON.stringify({ service: svc, status }, null, 2)}\n`);
+        return;
+      }
+
+      if (chart) {
+        if (chart !== "svg") {
+          fail("--chart currently supports: svg");
+        }
+        const svg = renderSystemStatusSvg(status, {
+          title: "ForgeOps Status",
+        });
+        if (chartStdout) {
+          process.stdout.write(`${svg}\n`);
+          return;
+        }
+        const defaultName = `forgeops-status-${new Date().toISOString().replace(/[:.]/g, "-")}.svg`;
+        const outPath = path.resolve(outFlag || path.join(process.cwd(), defaultName));
+        fs.mkdirSync(path.dirname(outPath), { recursive: true });
+        fs.writeFileSync(outPath, svg, "utf8");
+        process.stdout.write(`Wrote chart: ${outPath}\n`);
+        process.stdout.write(`Tip: open ${outPath}\n`);
         return;
       }
 

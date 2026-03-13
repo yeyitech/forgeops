@@ -148,6 +148,12 @@ forgeops scheduler show <projectId>
 forgeops status
 ```
 
+生成一张“系统状态图”（SVG）用于分享/审计/贴到 issue：
+
+```bash
+forgeops status --chart svg --out ./forgeops-status.svg
+```
+
 ### Issue / Run
 
 ```bash
