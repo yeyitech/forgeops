@@ -8,6 +8,20 @@ Updated: 2026-03-01
 ForgeOps is not just another Agent CLI wrapper.
 ForgeOps is an AI R&D control plane that turns `Issue -> Run -> Step -> PR` into an observable, recoverable, governable delivery system.
 
+## ForgeOps Is Not a Skill. It Is a Control Plane for an Agent Team.
+
+ForgeOps itself is the control plane, not a single skill.
+To make it easy to enter the control-plane workflow from any agent runtime, we ship a **Meta Skill** as the entrypoint (best experience with Codex today):
+
+- The skill guides the agent to call the `forgeops` CLI and operate managed projects
+- ForgeOps orchestrates a multi-role team (architect, issue manager, developer, tester, reviewer, governance/GC) with Codex as the default runtime
+- Every action is persisted as `Run -> Step -> Session` state for observability, replay, and recovery
+
+From a user perspective, the prerequisites are intentionally small:
+
+- working network access
+- GitHub + Codex accounts/tokens
+
 ## When throughput grows, attention becomes the real bottleneck
 
 In agent-driven engineering, the challenge is not only writing faster code. The challenge is reducing repeated failures, architectural drift, and stale documentation.
@@ -25,6 +39,18 @@ How ForgeOps addresses this:
 - Dual runtime gates: both CI Gate and Platform Gate are enforced.
 - Session recovery: resume context first, avoid costly restarts.
 - Scheduled governance: cleanup and automation loops reduce entropy continuously.
+
+## CLI Status Cards (SVG)
+
+When you need to share “what is the system doing right now” as evidence, ForgeOps CLI can generate an SVG status card and store it under the runtime config directory (default `~/.forgeops/charts/`). Agents can run the command, pick up the file path, and attach it to a chat/issue.
+
+```bash
+forgeops chart system
+forgeops chart project <projectId>
+forgeops chart run <runId>
+forgeops chart run <runId> --step implement
+forgeops chart session <sessionId>
+```
 
 ## Harness is an executable discipline, not a slogan
 

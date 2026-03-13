@@ -8,6 +8,20 @@ ForgeOps is a runtime-agnostic AI R&D control plane.
 
 当 AI 参与开发后，速度通常不是第一瓶颈，真正稀缺的是注意力和稳定性。ForgeOps 的目标是：在保持迭代速度的同时，压住熵增和复发性问题。
 
+## ForgeOps = Control Plane + Agent Team
+
+ForgeOps 本体是控制平面，不是单个 skill。
+但为了让你在任意 Agent Runtime 里都能“一句话进入控制面”，ForgeOps 提供了一个 **Meta Skill** 作为入口（当前对 Codex 体验最好）：
+
+- 你在对话里触发技能 -> skill 指导 agent 调用 `forgeops` CLI
+- ForgeOps 在后台以 Codex 为默认 runtime 编排一组角色（架构师、需求管理、研发、测试、评审、垃圾回收/治理）
+- Run/Step/Session 全链路结构化落盘，支持旁观、回放与恢复
+
+你需要自己准备的东西很少：
+
+- 网络可用
+- GitHub / Codex 账号与 token 可用
+
 ## Why ForgeOps
 
 团队把 Agent 用起来后，经常会遇到这些问题：
@@ -23,6 +37,25 @@ ForgeOps 提供的不是更多命令，而是更稳定的工程行为约束：
 - Run/Step 全链路状态可观测，可回放，可恢复。
 - Quick / Standard 双模式路由，默认 `quick`，风险升高再升级。
 - 质量闸门与周期治理并存，避免“交付完成但系统变脆弱”。
+
+## CLI 状态卡片（SVG）
+
+ForgeOps CLI 支持把系统状态“画成一张图”并保存到配置目录（默认 `~/.forgeops/charts/`），便于 agent 直接识别图片路径并发送到会话里：
+
+```bash
+# 系统全局
+forgeops chart system
+
+# 项目维度
+forgeops chart project <projectId>
+
+# run 维度（可按 step 聚焦）
+forgeops chart run <runId>
+forgeops chart run <runId> --step implement
+
+# session 维度（单个 step session）
+forgeops chart session <sessionId>
+```
 
 ## User Stories
 

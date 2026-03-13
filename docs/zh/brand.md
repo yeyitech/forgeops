@@ -8,6 +8,20 @@ Updated: 2026-03-01
 ForgeOps 不是“再包一层 Agent CLI”。
 ForgeOps 是 AI 研发流水线的控制平面，把 `Issue -> Run -> Step -> PR` 做成可观测、可恢复、可治理的工程系统。
 
+## ForgeOps 不是一个 Skill，而是一支研发 Agent Team 的控制面
+
+ForgeOps 本体是控制平面，不是单个 skill。
+但为了让任意 Agent Runtime 都能无缝进入控制面，我们提供一个 **Meta Skill** 作为入口（当前对 Codex 体验最好）：
+
+- skill 指导 agent 调用 `forgeops` CLI，进入项目托管工作流
+- ForgeOps 默认以 Codex 为 runtime，编排多角色团队：架构师、需求管理、研发、测试、评审、治理/垃圾回收
+- 每一步动作都落成 `Run -> Step -> Session` 可观测状态，失败可恢复、结果可复盘
+
+对使用者来说，你只需要准备：
+
+- 网络与账号（GitHub / Codex token）
+- 一个可运行的项目仓库
+
 ## 吞吐量上来后，真正稀缺的是注意力
 
 在 Agent 驱动研发里，问题不只是写得更快，而是避免反复踩坑、架构漂移和文档失真。
@@ -25,6 +39,18 @@ ForgeOps 的处理方式：
 - 运行态双闸门：CI Gate 与 Platform Gate 同时存在。
 - 会话恢复机制：优先续跑上下文，避免中断导致重做。
 - 周期清理与治理：cleanup + 调度任务持续回收熵增。
+
+## CLI 可以返回“状态卡片”（SVG）
+
+当你需要把“现在系统到底在干什么”快速贴到 issue / 群里 / 会话里时，ForgeOps CLI 可以直接生成一张 SVG 图并保存到配置目录（默认 `~/.forgeops/charts/`）。Agent 在 skill 指导下执行命令即可拿到图片路径并发送。
+
+```bash
+forgeops chart system
+forgeops chart project <projectId>
+forgeops chart run <runId>
+forgeops chart run <runId> --step implement
+forgeops chart session <sessionId>
+```
 
 ## Harness 不是口号，是可执行约束
 
