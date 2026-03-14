@@ -5821,6 +5821,7 @@ export class ForgeOpsStore {
       ? Math.min(24 * 60, Math.floor(windowMinutesRaw))
       : 60;
     const sinceIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+    const includeGitHubMetrics = parseBoolLike(options.includeGitHubMetrics ?? options.includeGithubMetrics, false);
 
     const scalar = (sql, ...params) => {
       const row = this.db.prepare(sql).get(...params);
@@ -5833,6 +5834,16 @@ export class ForgeOpsStore {
       for (const row of rows) {
         const key = String(row?.key ?? "").trim() || "unknown";
         out[key] = Number(row?.count ?? 0) || 0;
+      }
+      return out;
+    };
+
+    const groupSum = (sql, ...params) => {
+      const rows = this.db.prepare(sql).all(...params);
+      const out = {};
+      for (const row of rows) {
+        const key = String(row?.key ?? "").trim() || "unknown";
+        out[key] = Number(row?.sum ?? row?.count ?? 0) || 0;
       }
       return out;
     };
@@ -5861,6 +5872,7 @@ export class ForgeOpsStore {
     );
 
     const stepWindowTsExpr = "COALESCE(NULLIF(TRIM(ended_at), ''), NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''))";
+    const stepWindowTsExprStepsAlias = "COALESCE(NULLIF(TRIM(s.ended_at), ''), NULLIF(TRIM(s.updated_at), ''), NULLIF(TRIM(s.created_at), ''))";
     const stepsByStatusWindow = group(
       `SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count
        FROM steps
@@ -5872,6 +5884,20 @@ export class ForgeOpsStore {
 
     const sessionsByStatusWindow = group(
       "SELECT COALESCE(NULLIF(TRIM(status), ''), 'unknown') AS key, COUNT(*) AS count FROM sessions WHERE started_at >= ? GROUP BY key ORDER BY count DESC",
+      sinceIso
+    );
+
+    const sessionsByRuntimeWindow = group(
+      "SELECT COALESCE(NULLIF(TRIM(runtime), ''), 'unknown') AS key, COUNT(*) AS count FROM sessions WHERE started_at >= ? GROUP BY key ORDER BY count DESC",
+      sinceIso
+    );
+    const tokensByRuntimeWindow = groupSum(
+      `SELECT COALESCE(NULLIF(TRIM(runtime), ''), 'unknown') AS key,
+              COALESCE(SUM(token_input + token_cached_input + token_output + token_reasoning_output), 0) AS sum
+       FROM sessions
+       WHERE started_at >= ?
+       GROUP BY key
+       ORDER BY sum DESC`,
       sinceIso
     );
 
@@ -5951,6 +5977,106 @@ export class ForgeOpsStore {
       sinceIso
     );
 
+    const activeProjects = this.db.prepare(
+      "SELECT id, name, product_type, root_path, github_repo, status, created_at, updated_at FROM projects WHERE status = 'active' ORDER BY created_at DESC"
+    ).all();
+    const projectTokenRows = this.db.prepare(
+      `SELECT r.project_id AS project_id,
+              COALESCE(SUM(se.token_input + se.token_cached_input + se.token_output + se.token_reasoning_output), 0) AS token_total,
+              COUNT(*) AS session_count
+       FROM sessions se
+       JOIN runs r ON r.id = se.run_id
+       WHERE se.started_at >= ?
+       GROUP BY r.project_id
+       ORDER BY token_total DESC`
+    ).all(sinceIso);
+    const tokenByProject = new Map(
+      projectTokenRows.map((row) => [String(row.project_id ?? ""), Number(row.token_total ?? 0) || 0])
+    );
+    const sessionsByProject = new Map(
+      projectTokenRows.map((row) => [String(row.project_id ?? ""), Number(row.session_count ?? 0) || 0])
+    );
+    const activeProjectsSorted = Array.isArray(activeProjects) ? [...activeProjects] : [];
+    activeProjectsSorted.sort((a, b) => {
+      const ta = tokenByProject.get(String(a?.id ?? "")) ?? 0;
+      const tb = tokenByProject.get(String(b?.id ?? "")) ?? 0;
+      if (tb !== ta) return tb - ta;
+      // Tie-breaker: prefer projects with running runs.
+      const ra = scalar("SELECT COUNT(*) AS count FROM runs WHERE project_id = ? AND status = 'running'", String(a?.id ?? ""));
+      const rb = scalar("SELECT COUNT(*) AS count FROM runs WHERE project_id = ? AND status = 'running'", String(b?.id ?? ""));
+      if (rb !== ra) return rb - ra;
+      return String(b?.created_at ?? "").localeCompare(String(a?.created_at ?? ""));
+    });
+
+    const managedProjectsTop = [];
+    const githubIssuesAggregate = {
+      sampledProjects: 0,
+      githubAvailableProjects: 0,
+      issue_open_total: 0,
+      issue_closed_total: 0,
+      pr_open_total: 0,
+      pr_closed_total: 0,
+      warning: "",
+    };
+
+    const maxProjects = Math.max(1, Math.min(12, Math.floor(Number(options.managedProjectsMax ?? 8) || 8)));
+    for (const project of activeProjectsSorted.slice(0, maxProjects)) {
+      const pid = String(project?.id ?? "").trim();
+      if (!pid) continue;
+      const runsRunning = scalar("SELECT COUNT(*) AS count FROM runs WHERE project_id = ? AND status = 'running'", pid);
+      const runsFailedWindow = scalar("SELECT COUNT(*) AS count FROM runs WHERE project_id = ? AND status = 'failed' AND updated_at >= ?", pid, sinceIso);
+      const stepsFailedWindow = scalar(
+        `SELECT COUNT(*) AS count
+         FROM steps s
+         JOIN runs r ON r.id = s.run_id
+         WHERE r.project_id = ? AND s.status = 'failed' AND ${stepWindowTsExprStepsAlias} >= ?`,
+        pid,
+        sinceIso
+      );
+
+      const row = {
+        project_id: pid,
+        project_name: String(project?.name ?? ""),
+        product_type: String(project?.product_type ?? ""),
+        root_path: String(project?.root_path ?? ""),
+        github_repo: String(project?.github_repo ?? ""),
+        runs_running: runsRunning,
+        runs_failed_window: runsFailedWindow,
+        steps_failed_window: stepsFailedWindow,
+        tokens_window: tokenByProject.get(pid) ?? 0,
+        sessions_window: sessionsByProject.get(pid) ?? 0,
+        github_available: false,
+        issue_open: null,
+        issue_closed: null,
+      };
+
+      if (includeGitHubMetrics) {
+        try {
+          const metrics = this.getProjectGitHubMetrics(project);
+          row.github_available = Boolean(metrics?.github_available);
+          if (row.github_available) {
+            githubIssuesAggregate.githubAvailableProjects += 1;
+            const issueOpen = Number(metrics?.issue_count_open ?? 0) || 0;
+            const issueClosed = Number(metrics?.issue_count_closed ?? 0) || 0;
+            row.issue_open = issueOpen;
+            row.issue_closed = issueClosed;
+            githubIssuesAggregate.issue_open_total += issueOpen;
+            githubIssuesAggregate.issue_closed_total += issueClosed;
+            githubIssuesAggregate.pr_open_total += Number(metrics?.pr_count_open ?? 0) || 0;
+            githubIssuesAggregate.pr_closed_total += Number(metrics?.pr_count_closed ?? 0) || 0;
+          } else {
+            row.issue_open = null;
+            row.issue_closed = null;
+          }
+        } catch (err) {
+          githubIssuesAggregate.warning = githubIssuesAggregate.warning || `GitHub metrics failed: ${formatErrorMessage(err)}`;
+        }
+      }
+
+      managedProjectsTop.push(row);
+      githubIssuesAggregate.sampledProjects += 1;
+    }
+
     return {
       now: nowIso(),
       windowMinutes,
@@ -5962,6 +6088,8 @@ export class ForgeOpsStore {
       runsByStatusWindow,
       stepsByStatusWindow,
       sessionsByStatusWindow,
+      sessionsByRuntimeWindow,
+      tokensByRuntimeWindow,
       queue,
       events: {
         windowMinutes,
@@ -5973,6 +6101,8 @@ export class ForgeOpsStore {
       topFailedStepsByKey,
       tokensByStepKey,
       sessionsByAgent,
+      managedProjectsTop,
+      githubIssuesAggregate: includeGitHubMetrics ? githubIssuesAggregate : null,
     };
   }
 

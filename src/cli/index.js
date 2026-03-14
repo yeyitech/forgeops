@@ -2578,7 +2578,8 @@ async function commandChart(store, args) {
 
   if (scope === "system") {
     const windowMinutes = Number(getFlag(args, "--window-minutes", "60") ?? "60") || 60;
-    const status = store.getSystemStatus({ windowMinutes });
+    const wantsGithub = format === "png" || format === "html";
+    const status = store.getSystemStatus({ windowMinutes, includeGitHubMetrics: wantsGithub });
     if (format === "svg") {
       const outPath = path.resolve(outFlag || resolveDefaultChartPath("system", "", "svg"));
       const svg = renderSystemStatusSvg(status, { title: "ForgeOps System Status" });

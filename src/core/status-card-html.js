@@ -93,10 +93,59 @@ function buildBarsHtml(entries, options = {}) {
   }).join("");
 }
 
+function buildManagedProjectsTableHtml(rows, options = {}) {
+  const items = Array.isArray(rows) ? rows : [];
+  const maxRows = Math.max(1, Math.min(12, Math.floor(toNumber(options.maxRows, 8))));
+  const clipped = items.slice(0, maxRows);
+  if (clipped.length === 0) {
+    return `<div class="empty">No managed projects</div>`;
+  }
+
+  const hasIssues = clipped.some((row) => row && row.issue_open !== null && row.issue_open !== undefined);
+
+  const headerCols = [
+    `<div class="projCell projHead">Project</div>`,
+    `<div class="projCell projHead">Runs</div>`,
+    `<div class="projCell projHead">Fail(step)</div>`,
+    `<div class="projCell projHead">Tokens</div>`,
+    `<div class="projCell projHead">${hasIssues ? "Issues" : "Sessions"}</div>`,
+  ].join("");
+
+  const bodyRows = clipped.map((row) => {
+    const name = truncateEnd(normalizeText(row?.project_name), 26) || "unknown";
+    const type = truncateEnd(normalizeText(row?.product_type), 10) || "-";
+    const runsRunning = formatInt(toNumber(row?.runs_running, 0));
+    const runsFailedWindow = formatInt(toNumber(row?.runs_failed_window, 0));
+    const stepsFailedWindow = formatInt(toNumber(row?.steps_failed_window, 0));
+    const tokensWindow = formatInt(toNumber(row?.tokens_window, 0));
+    const sessionsWindow = formatInt(toNumber(row?.sessions_window, 0));
+    const issuesOpen = row?.issue_open === null || row?.issue_open === undefined ? "-" : formatInt(toNumber(row.issue_open, 0));
+
+    const tail = hasIssues ? issuesOpen : sessionsWindow;
+    return [
+      `<div class="projRow">`,
+      `<div class="projCell projName"><span class="projTitle">${htmlEscape(name)}</span><span class="projBadge">${htmlEscape(type)}</span></div>`,
+      `<div class="projCell projMono">${htmlEscape(runsRunning)}<span class="projTiny"> run</span> <span class="projTinyMuted">+${htmlEscape(runsFailedWindow)} fail</span></div>`,
+      `<div class="projCell projMono">${htmlEscape(stepsFailedWindow)}</div>`,
+      `<div class="projCell projMono">${htmlEscape(tokensWindow)}</div>`,
+      `<div class="projCell projMono">${htmlEscape(tail)}</div>`,
+      `</div>`,
+    ].join("");
+  }).join("");
+
+  return [
+    `<div class="projTable">`,
+    `<div class="projRow projHeader">${headerCols}</div>`,
+    bodyRows,
+    `</div>`,
+  ].join("");
+}
+
 function renderStatusCardHtml(status, options = {}) {
   const s = status && typeof status === "object" ? status : {};
   const width = clampInt(options?.width ?? 1280, 960, 2000);
   const height = clampInt(options?.height ?? 900, 640, 2000);
+  const variant = normalizeText(options?.variant) || "system";
 
   const title = normalizeText(options.title) || "ForgeOps Status";
   const subtitle = normalizeText(options.subtitle) || `window=${normalizeText(s.windowMinutes)}m  since=${normalizeText(s.since)}`;
@@ -113,6 +162,12 @@ function renderStatusCardHtml(status, options = {}) {
   const topFailedStepsByKey = entriesFromCountMap(s.topFailedStepsByKey);
   const tokensByStepKey = entriesFromCountMap(s.tokensByStepKey);
   const sessionsByAgent = entriesFromCountMap(s.sessionsByAgent);
+  const sessionsByRuntimeWindow = entriesFromCountMap(s.sessionsByRuntimeWindow);
+  const tokensByRuntimeWindow = entriesFromCountMap(s.tokensByRuntimeWindow);
+  const managedProjectsTop = Array.isArray(s.managedProjectsTop) ? s.managedProjectsTop : [];
+  const githubIssuesAggregate = s.githubIssuesAggregate && typeof s.githubIssuesAggregate === "object"
+    ? s.githubIssuesAggregate
+    : null;
 
   const projectTypes = entriesFromCountMap(s?.projects?.byProductType);
 
@@ -161,44 +216,93 @@ function renderStatusCardHtml(status, options = {}) {
     ].filter(Boolean).join("  ")
     : `events=${formatInt(eventsTotal)}  window=${formatInt(windowMinutes)}m  topFail ${truncateEnd(topFailInline || "n/a", 40)}`;
 
-  const kpi = [
-    {
-      title: "Projects",
-      big: formatInt(projectsTotal),
-      sub1: `active=${formatInt(projectsActive)}`,
-      sub2: typesInline ? `types ${truncateEnd(typesInline, 34)}` : "types n/a",
-    },
-    {
-      title: `Runs (${formatInt(windowMinutes)}m)`,
-      big: formatInt(windowRunsTotal),
-      sub1: `running=${formatInt(getCount(s.runsByStatusWindow, "running"))} failed=${formatInt(getCount(s.runsByStatusWindow, "failed"))}`,
-      sub2: `total=${formatInt(totalRuns)}`,
-    },
-    {
-      title: `Steps (${formatInt(windowMinutes)}m)`,
-      big: formatInt(windowStepsTotal),
-      sub1: `done=${formatInt(windowStepsDone)} failed=${formatInt(windowStepsFailed)}`,
-      sub2: `failRate=${windowFailureRate.toFixed(1)}%`,
-    },
-    {
-      title: `Sessions (${formatInt(windowMinutes)}m)`,
-      big: formatInt(windowSessionsTotal),
-      sub1: `running=${formatInt(getCount(s.sessionsByStatusWindow, "running"))} failed=${formatInt(getCount(s.sessionsByStatusWindow, "failed"))}`,
-      sub2: `total=${formatInt(totalSessions)}`,
-    },
-    {
-      title: "Queue (now)",
-      big: formatInt(queueWaiting),
-      sub1: `pending=${formatInt(queuePending)} running=${formatInt(queueRunning)}`,
-      sub2: `failed=${formatInt(queueFailed)}`,
-    },
-    {
-      title: `Tokens (${formatInt(windowMinutes)}m)`,
-      big: formatInt(tokenTotal),
-      sub1: `sessions=${formatInt(tokenSessions)} cacheHit=${cacheHit.toFixed(1)}%`,
-      sub2: `in=${formatInt(tokenIn)} cached=${formatInt(tokenCached)} out=${formatInt(tokenOut)}`,
-    },
-  ];
+  const codexSessionsWindow = getCount(s.sessionsByRuntimeWindow, "codex-exec-json") + getCount(s.sessionsByRuntimeWindow, "codex-exec-json");
+  const topRuntime = sessionsByRuntimeWindow.length > 0 ? sessionsByRuntimeWindow[0] : null;
+  const topAgent = sessionsByAgent.length > 0 ? sessionsByAgent[0] : null;
+  const agentKindsWindow = sessionsByAgent.length;
+
+  const issueOpenTotal = githubIssuesAggregate ? toNumber(githubIssuesAggregate.issue_open_total, 0) : 0;
+  const issueClosedTotal = githubIssuesAggregate ? toNumber(githubIssuesAggregate.issue_closed_total, 0) : 0;
+  const githubProjectCount = githubIssuesAggregate ? toNumber(githubIssuesAggregate.githubAvailableProjects, 0) : 0;
+  const sampledProjects = githubIssuesAggregate ? toNumber(githubIssuesAggregate.sampledProjects, 0) : 0;
+
+  const kpi = variant === "system"
+    ? [
+        {
+          title: "Managed Projects",
+          big: formatInt(projectsActive),
+          sub1: `total=${formatInt(projectsTotal)}`,
+          sub2: typesInline ? `types ${truncateEnd(typesInline, 32)}` : "types n/a",
+        },
+        {
+          title: `Issues (${formatInt(windowMinutes)}m)`,
+          big: githubIssuesAggregate ? formatInt(issueOpenTotal) : "n/a",
+          sub1: githubIssuesAggregate ? `open=${formatInt(issueOpenTotal)} closed=${formatInt(issueClosedTotal)}` : "GitHub metrics off",
+          sub2: githubIssuesAggregate ? `repos=${formatInt(githubProjectCount)}/${formatInt(sampledProjects)}` : "use --format png/html to include",
+        },
+        {
+          title: "Queue (now)",
+          big: formatInt(queueWaiting),
+          sub1: `pending=${formatInt(queuePending)} running=${formatInt(queueRunning)}`,
+          sub2: `failed=${formatInt(queueFailed)}`,
+        },
+        {
+          title: `Runs (${formatInt(windowMinutes)}m)`,
+          big: formatInt(windowRunsTotal),
+          sub1: `running=${formatInt(getCount(s.runsByStatusWindow, "running"))} failed=${formatInt(getCount(s.runsByStatusWindow, "failed"))}`,
+          sub2: `total=${formatInt(totalRuns)}`,
+        },
+        {
+          title: `Tokens (${formatInt(windowMinutes)}m)`,
+          big: formatInt(tokenTotal),
+          sub1: `sessions=${formatInt(tokenSessions)} cacheHit=${cacheHit.toFixed(1)}%`,
+          sub2: `in=${formatInt(tokenIn)} cached=${formatInt(tokenCached)} out=${formatInt(tokenOut)}`,
+        },
+        {
+          title: "Codex Agents",
+          big: formatInt(windowSessionsTotal),
+          sub1: `agents=${formatInt(agentKindsWindow)} running=${formatInt(getCount(s.sessionsByStatusWindow, "running"))}`,
+          sub2: topAgent ? `${truncateEnd(topAgent.key, 18)}:${formatInt(topAgent.value)}` : (topRuntime ? `${truncateEnd(topRuntime.key, 20)}:${formatInt(topRuntime.value)}` : "n/a"),
+        },
+      ]
+    : [
+        {
+          title: "Projects",
+          big: formatInt(projectsTotal),
+          sub1: `active=${formatInt(projectsActive)}`,
+          sub2: typesInline ? `types ${truncateEnd(typesInline, 34)}` : "types n/a",
+        },
+        {
+          title: `Runs (${formatInt(windowMinutes)}m)`,
+          big: formatInt(windowRunsTotal),
+          sub1: `running=${formatInt(getCount(s.runsByStatusWindow, "running"))} failed=${formatInt(getCount(s.runsByStatusWindow, "failed"))}`,
+          sub2: `total=${formatInt(totalRuns)}`,
+        },
+        {
+          title: `Steps (${formatInt(windowMinutes)}m)`,
+          big: formatInt(windowStepsTotal),
+          sub1: `done=${formatInt(windowStepsDone)} failed=${formatInt(windowStepsFailed)}`,
+          sub2: `failRate=${windowFailureRate.toFixed(1)}%`,
+        },
+        {
+          title: `Sessions (${formatInt(windowMinutes)}m)`,
+          big: formatInt(windowSessionsTotal),
+          sub1: `running=${formatInt(getCount(s.sessionsByStatusWindow, "running"))} failed=${formatInt(getCount(s.sessionsByStatusWindow, "failed"))}`,
+          sub2: `total=${formatInt(totalSessions)}`,
+        },
+        {
+          title: "Queue (now)",
+          big: formatInt(queueWaiting),
+          sub1: `pending=${formatInt(queuePending)} running=${formatInt(queueRunning)}`,
+          sub2: `failed=${formatInt(queueFailed)}`,
+        },
+        {
+          title: `Tokens (${formatInt(windowMinutes)}m)`,
+          big: formatInt(tokenTotal),
+          sub1: `sessions=${formatInt(tokenSessions)} cacheHit=${cacheHit.toFixed(1)}%`,
+          sub2: `in=${formatInt(tokenIn)} cached=${formatInt(tokenCached)} out=${formatInt(tokenOut)}`,
+        },
+      ];
 
   const panel = (panelTitle, bodyHtml, hint = "") => {
     const hintHtml = hint ? `<div class="panelHint">${htmlEscape(hint)}</div>` : "";
@@ -260,6 +364,18 @@ function renderStatusCardHtml(status, options = {}) {
     `.barFill{height:100%; background:var(--barFill); border-radius:8px;}`,
     `.barValue{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-weight:720; font-size:12px; text-align:right;}`,
     `.empty{margin-top:14px; font-size:12px; color:var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}`,
+    `.projTable{margin-top:10px; display:flex; flex-direction:column; gap:8px;}`,
+    `.projHeader{opacity:.9;}`,
+    `.projRow{display:grid; grid-template-columns: 1.55fr .95fr .8fr 1fr .7fr; gap:10px; align-items:center; padding:8px 8px; border-radius:12px;}`,
+    `.projRow:not(.projHeader){background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.06);}`,
+    `.projCell{font-size:12px; color: rgba(244,244,245,.88);}`,
+    `.projHead{font-size:11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}`,
+    `.projName{display:flex; align-items:baseline; gap:8px; min-width:0;}`,
+    `.projTitle{font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}`,
+    `.projBadge{font-size:10px; color: rgba(161,161,170,.9); border: 1px solid rgba(255,255,255,.10); padding: 2px 6px; border-radius: 999px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}`,
+    `.projMono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: rgba(244,244,245,.92);}`,
+    `.projTiny{font-size:10px; color: rgba(161,161,170,.92); margin-left:2px;}`,
+    `.projTinyMuted{font-size:10px; color: rgba(161,161,170,.82); margin-left:6px;}`,
     `</style>`,
     `</head>`,
     `<body>`,
@@ -284,36 +400,71 @@ function renderStatusCardHtml(status, options = {}) {
     ].join("")),
     `</section>`,
     `<section class="panels">`,
-    panel(
-      `Runs By Status (${formatInt(windowMinutes)}m)`,
-      `<div>${buildBarsHtml(runsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
-      `total=${formatInt(totalRuns)}`
-    ),
-    panel(
-      `Steps By Status (${formatInt(windowMinutes)}m)`,
-      `<div>${buildBarsHtml(stepsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
-      `total=${formatInt(totalSteps)}`
-    ),
-    panel(
-      `Sessions By Status (${formatInt(windowMinutes)}m)`,
-      `<div>${buildBarsHtml(sessionsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
-      `total=${formatInt(totalSessions)}`
-    ),
-    panel(
-      `Top Failing Steps (${formatInt(windowMinutes)}m)`,
-      `<div style="--barFill:#ff5c5c">${buildBarsHtml(topFailedStepsByKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
-      `failed=${formatInt(windowStepsFailed)}`
-    ),
-    panel(
-      `Tokens By Step (${formatInt(windowMinutes)}m)`,
-      `<div style="--barFill:#22c55e">${buildBarsHtml(tokensByStepKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
-      `total=${formatInt(tokenTotal)}`
-    ),
-    panel(
-      `Sessions By Agent (${formatInt(windowMinutes)}m)`,
-      `<div style="--barFill:#60a5fa">${buildBarsHtml(sessionsByAgent, { maxRows: 7, labelMaxChars: 18 })}</div>`,
-      `sessions=${formatInt(windowSessionsTotal)}`
-    ),
+    ...(variant === "system"
+      ? [
+          panel(
+            `Managed Projects (top)`,
+            buildManagedProjectsTableHtml(managedProjectsTop, { maxRows: 8 }),
+            githubIssuesAggregate ? `issues(open)=${formatInt(issueOpenTotal)}` : `projects=${formatInt(projectsActive)}`
+          ),
+          panel(
+            `Runs By Status (${formatInt(windowMinutes)}m)`,
+            `<div>${buildBarsHtml(runsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+            `total=${formatInt(totalRuns)}`
+          ),
+          panel(
+            `Steps By Status (${formatInt(windowMinutes)}m)`,
+            `<div>${buildBarsHtml(stepsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+            `failed=${formatInt(windowStepsFailed)} rate=${windowFailureRate.toFixed(1)}%`
+          ),
+          panel(
+            `Top Failing Steps (${formatInt(windowMinutes)}m)`,
+            `<div style="--barFill:#ff5c5c">${buildBarsHtml(topFailedStepsByKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
+            `failed=${formatInt(windowStepsFailed)}`
+          ),
+          panel(
+            `Tokens By Step (${formatInt(windowMinutes)}m)`,
+            `<div style="--barFill:#22c55e">${buildBarsHtml(tokensByStepKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
+            `total=${formatInt(tokenTotal)}`
+          ),
+          panel(
+            `Codex: Sessions By Agent (${formatInt(windowMinutes)}m)`,
+            `<div style="--barFill:#60a5fa">${buildBarsHtml(sessionsByAgent, { maxRows: 7, labelMaxChars: 18 })}</div>`,
+            topRuntime ? `${truncateEnd(topRuntime.key, 22)}=${formatInt(topRuntime.value)}  tokensTop=${truncateEnd((tokensByRuntimeWindow[0]?.key ?? ""), 16)}` : `sessions=${formatInt(windowSessionsTotal)}`
+          ),
+        ]
+      : [
+          panel(
+            `Runs By Status (${formatInt(windowMinutes)}m)`,
+            `<div>${buildBarsHtml(runsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+            `total=${formatInt(totalRuns)}`
+          ),
+          panel(
+            `Steps By Status (${formatInt(windowMinutes)}m)`,
+            `<div>${buildBarsHtml(stepsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+            `total=${formatInt(totalSteps)}`
+          ),
+          panel(
+            `Sessions By Status (${formatInt(windowMinutes)}m)`,
+            `<div>${buildBarsHtml(sessionsByStatusWindow, { maxRows: 7, labelMaxChars: 22, colorByKey: true })}</div>`,
+            `total=${formatInt(totalSessions)}`
+          ),
+          panel(
+            `Top Failing Steps (${formatInt(windowMinutes)}m)`,
+            `<div style="--barFill:#ff5c5c">${buildBarsHtml(topFailedStepsByKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
+            `failed=${formatInt(windowStepsFailed)}`
+          ),
+          panel(
+            `Tokens By Step (${formatInt(windowMinutes)}m)`,
+            `<div style="--barFill:#22c55e">${buildBarsHtml(tokensByStepKey, { maxRows: 7, labelMaxChars: 28 })}</div>`,
+            `total=${formatInt(tokenTotal)}`
+          ),
+          panel(
+            `Sessions By Agent (${formatInt(windowMinutes)}m)`,
+            `<div style="--barFill:#60a5fa">${buildBarsHtml(sessionsByAgent, { maxRows: 7, labelMaxChars: 18 })}</div>`,
+            `sessions=${formatInt(windowSessionsTotal)}`
+          ),
+        ]),
     `</section>`,
     `</div>`,
     `</body>`,
@@ -330,6 +481,7 @@ export function renderSystemStatusHtml(status, options = {}) {
     subtitle: normalizeText(options?.subtitle) || "",
     width: options?.width,
     height: options?.height,
+    variant: "system",
   });
 }
 
@@ -351,5 +503,6 @@ export function renderProjectStatusHtml(projectStatus, options = {}) {
       : null,
     width: options?.width,
     height: options?.height,
+    variant: "project",
   });
 }
