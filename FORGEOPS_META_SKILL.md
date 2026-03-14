@@ -39,7 +39,25 @@ forgeops help
 forgeops doctor --json
 forgeops service status
 forgeops project list
+forgeops status --json
 ```
+
+## 可观测证据（状态卡片）
+
+当你需要把“现在系统到底在干什么”作为证据贴到 issue/群/会话里，优先生成图片卡片（默认写入 `~/.forgeops/charts/`，或用 `--out` 指定绝对路径）。
+
+```bash
+# 系统级（推荐 PNG：更像产品卡片）
+forgeops chart system --format png --width 1280 --height 900
+
+# 项目级
+forgeops chart project <projectId> --format png --width 1280 --height 900
+```
+
+输出建议：
+
+1. 优先用 `--json` 拿到 `path`，再把图片路径作为证据发出去。
+2. 不要用终端内联图片；只需要返回图片文件路径即可。
 
 ## 项目初始化（仅在用户确认后执行）
 
@@ -54,8 +72,26 @@ forgeops issue create <projectId> "<title>" --description "<desc>"
 forgeops run list --project <projectId>
 forgeops run show <runId>
 forgeops run attach <runId>
+forgeops run sessions <runId>
 forgeops run resume <runId>
 ```
+
+## Session LiveView（旁观/导出）
+
+用于观察 ForgeOps 管理的 runtime 会话，不需要改 Codex 源码：
+
+```bash
+# 查看 run 下所有 step sessions（可按 step/status 过滤）
+forgeops run sessions <runId> --with-thread
+
+# 导出某个 session 的日志（用于审计/排障）
+forgeops run session export <sessionId> --lines 2000 --out <path>
+```
+
+执行原则：
+
+1. 先 `run sessions` 找到目标 sessionId，再做 export。
+2. 日志内容可能包含敏感信息：默认只摘要关键片段，避免全量粘贴到公开渠道。
 
 ## 配置回读与更新
 
@@ -65,6 +101,29 @@ forgeops workflow set <projectId> --yaml-file <path>
 forgeops scheduler show <projectId>
 forgeops scheduler set <projectId> --enabled true --cleanup-enabled true --cron "0 3 * * *"
 ```
+
+## 环境变量管理（system/project/run/step 四级作用域）
+
+用于让 agent 执行时拿到必需的 token / endpoint 等（会在 step 启动时自动注入 runtime env）。默认输出会对 secret 脱敏，只有加 `--show` 才会打印真实值。
+
+```bash
+# system 级：影响所有项目/所有 run
+forgeops env set system OPENAI_API_KEY=... --secret
+forgeops env ls system
+
+# project 级：仅影响该项目
+forgeops env set project <projectId> SUPABASE_URL=... --plain
+forgeops env ls project <projectId>
+
+# step 级：只影响该 run 的某个 step（优先级最高）
+forgeops env set step <runId> implement DATABASE_URL=... --secret
+forgeops env effective step <runId> implement
+```
+
+强约束：
+
+1. 默认不要在输出里打印 secret（不要用 `--show`），除非用户明确要求。
+2. 不要尝试覆盖 ForgeOps/Codex 保留 env（例如 `FORGEOPS_*` / `CODEX_*` / `HOME` 等）。
 
 ## 技能治理
 
