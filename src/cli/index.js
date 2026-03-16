@@ -15,6 +15,8 @@ import { findCodexSessionJsonlForThread, readTailTextFile, resolveManagedCodexHo
 import { renderProjectStatusSvg, renderRunStatusSvg, renderSessionStatusSvg, renderSystemStatusSvg } from "../core/status-chart.js";
 import { renderProjectStatusHtml, renderSystemStatusHtml } from "../core/status-card-html.js";
 import { renderHtmlToPngWithChrome } from "../core/html-to-image.js";
+import { renderProjectOverviewDashboardHtml, renderSystemSettingsDashboardHtml } from "../core/console-dashboard-chart.js";
+import { readSystemConfig } from "../core/system-config.js";
 import {
   getForgeOpsServiceInfo,
   installForgeOpsService,
@@ -52,6 +54,7 @@ function printUsage() {
       "forgeops status [--window-minutes 60] --chart svg [--out PATH | --stdout]  # generate chart (SVG)",
       "forgeops chart system [--window-minutes 60] [--format svg|html|png] [--width 1280] [--height 900] [--out PATH] [--json]  # writes under runtime charts dir by default",
       "forgeops chart project <projectId> [--window-minutes 60] [--format svg|html|png] [--width 1280] [--height 900] [--out PATH] [--json]",
+      "forgeops chart system|project ... --template console  # card dashboard aligned with UI",
       "forgeops chart run <runId> ... [--experimental]  # not enabled by default",
       "forgeops chart session <sessionId> ... [--experimental]  # not enabled by default",
       "forgeops env set system KEY=VALUE [--secret|--plain]",
